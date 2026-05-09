@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # LLM Configuration
+      OLLAMA_MODEL_NAME: gemma4
+      MISINFO_LLM_MODEL: ollama://gemma4
+
+      # Optional: YouTube cookies for extraction
+      # YTDLP_COOKIES_FROM_BROWSER: firefox
+      # YTDLP_COOKIE_FILE: /app/.cookies.txt
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  api_data:
