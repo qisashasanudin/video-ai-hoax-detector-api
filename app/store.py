@@ -99,6 +99,17 @@ def set_job_failed(job_id: str, error: str) -> None:
         )
         conn.commit()
 
+
+def set_job_result(job_id: str, result_json: str) -> None:
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET result_json = ?, updated_at = ? WHERE id = ?",
+            (result_json, now, job_id),
+        )
+        conn.commit()
+
+
 def set_job_progress(job_id: str, progress: str) -> None:
     now = time.time()
     with _connect() as conn:
@@ -112,7 +123,7 @@ def get_job(job_id: str) -> Optional[dict[str, Any]]:
     with _connect() as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
-            "SELECT id, status, result_json, error, progress FROM jobs WHERE id = ?",
+            "SELECT id, status, url, result_json, error, progress FROM jobs WHERE id = ?",
             (job_id,),
         )
         row = cur.fetchone()

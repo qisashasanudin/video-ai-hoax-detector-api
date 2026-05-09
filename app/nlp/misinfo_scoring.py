@@ -362,7 +362,6 @@ KERANGKA ANALISIS BERBASIS BUKTI:
 - Konten AI-generated bukanlah misinformasi secara inheren; evaluasi apakah dimaksudkan untuk menipu atau jika jelas diberi label sebagai sintetis
 - Konten dari sumber media terkemuka seperti Reuters, BBC, CNN dianggap kredibel meskipun topiknya kontroversial
 - Klaim tentang peristiwa publik atau pernyataan resmi dari tokoh politik tidak otomatis hoax; nilai berdasarkan konteks dan sumber
-- Klaim tentang keberadaan alien atau UFO dari sumber kredibel seperti Reuters tidak dianggap hoax; pertimbangkan sebagai diskusi hipotetis
 - Jika tidak ada bukti manipulasi visual/audio, berikan skor AI rendah
 - Jika klaim berasal dari sumber kredibel dan tidak bertentangan dengan fakta umum, berikan risiko misinformasi rendah
 - Pertimbangkan semua bukti: visual, audio, tekstual, metadata

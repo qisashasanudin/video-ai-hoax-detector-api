@@ -12,6 +12,7 @@ from .store import (
     init_db,
     set_job_failed,
     set_job_progress,
+    set_job_result,
     set_job_succeeded,
     set_job_status,
     get_job as get_job_record,
@@ -40,7 +41,7 @@ app.add_middleware(
 )
 
 
-JobStatus = Literal["queued", "running", "succeeded", "failed"]
+JobStatus = Literal["queued", "running", "succeeded", "failed", "extracted"]
 
 
 class AnalyzeRequest(BaseModel):
@@ -95,6 +96,22 @@ class AnalyzeResponse(BaseModel):
     job_id: str
 
 
+class ExtractResponse(BaseModel):
+    job_id: str
+    video_title: Optional[str] = None
+    video_description: Optional[str] = None
+    video_thumbnail_url: Optional[str] = None
+
+
+class StartAnalysisRequest(BaseModel):
+    job_id: str
+
+
+class StartAnalysisResponse(BaseModel):
+    job_id: str
+    status: str = "analysis_started"
+
+
 db_lock = asyncio.Lock()
 
 BASE_DATA_DIR = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")), "data")
@@ -118,21 +135,43 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
-async def _run_mock_job(job_id: str, url: str) -> None:
-    # Keep the same perceived latency pattern as the UI mock.
+async def _extract_video(job_id: str, url: str) -> dict:
+    """
+    Synchronously extract video metadata (download video, extract frames, get metadata).
+    This runs without creating a background task.
+    Returns dict with video_title, video_description, video_thumbnail_url, job_dir, frames_count, audio_path.
+    """
+    try:
+        set_job_progress(job_id, "Downloading video...")
+        extraction = await extract_youtube_media(
+            url=url,
+            job_id=job_id,
+            base_data_dir=BASE_DATA_DIR,
+            max_download_seconds=20,
+            max_frames=24,
+        )
+        return extraction
+    except Exception as e:
+        raise Exception(f"Extraction failed: {str(e)}")
+
+
+async def _run_analysis_job(job_id: str) -> None:
+    """
+    Async background job for analysis only. Assumes video metadata is already extracted.
+    """
     await asyncio.sleep(0.2)
     async with db_lock:
-        # If job was deleted/overwritten, just no-op.
         record = get_job_record(job_id)
         if record is None:
             return
         set_job_status(job_id, "running")
-        set_job_progress(job_id, "Initializing analysis...")
+        set_job_progress(job_id, "Starting comprehensive analysis...")
 
     async with db_lock:
         record = get_job_record(job_id)
         if record is None:
             return
+
     extraction_note: Optional[str] = None
     frames_count: Optional[int] = None
     job_dir: Optional[str] = None
@@ -146,34 +185,44 @@ async def _run_mock_job(job_id: str, url: str) -> None:
     video_title: Optional[str] = None
     video_description: Optional[str] = None
     video_thumbnail_url: Optional[str] = None
+
+    # Get existing result to extract metadata that was stored during extraction
+    result_json = record.get("result_json")
+    if result_json:
+        try:
+            existing_result = AnalysisResult.model_validate_json(result_json)
+            video_title = existing_result.video_title
+            video_description = existing_result.video_description
+            video_thumbnail_url = existing_result.video_thumbnail_url
+        except:
+            pass
+
+    # Get job_dir and audio_path from the job directory structure
+    url = record.get("url")
+    if not url:
+        set_job_failed(job_id, "No URL stored in job record")
+        return
+
+    # Reconstruct paths - we need to get these from somewhere
+    # For now, we'll store them in the result during extraction
+    job_dir_match = None
+    audio_path = None
+    frames_count = None
+
     try:
-        set_job_progress(job_id, "Extracting video and audio...")
-        extraction = await extract_youtube_media(
-            url=url,
-            job_id=job_id,
-            base_data_dir=BASE_DATA_DIR,
-            max_download_seconds=20,
-            max_frames=24,
-        )
-        frames_count = extraction.get("frames_count") if isinstance(extraction.get("frames_count"), int) else None
-        job_dir = extraction.get("job_dir")
-        audio_path = extraction.get("audio_path") if isinstance(extraction.get("audio_path"), str) else None
-        video_title = extraction.get("video_title") if isinstance(extraction.get("video_title"), str) else None
-        video_description = extraction.get("video_description") if isinstance(extraction.get("video_description"), str) else None
-        video_thumbnail_url = extraction.get("video_thumbnail_url") if isinstance(extraction.get("video_thumbnail_url"), str) else None
-        if isinstance(job_dir, str) and frames_count is not None:
-            frames_dir = os.path.join(job_dir, "frames")
-            set_job_progress(job_id, "Menganalisis video untuk deteksi AI...")
-            ai_score_override, ai_drivers_override = detect_ai_generation_from_frames(
-                frames_dir,
-                audio_path=audio_path,
-                url=url,
-                max_frames=24,
-                video_title=video_title,
-                video_description=video_description,
-            )
-    except Exception as e:
-        extraction_note = str(e)
+        # Scan the data directory to find the job directory
+        jobs_dir = os.path.join(BASE_DATA_DIR, "jobs")
+        if os.path.exists(jobs_dir):
+            for entry in os.listdir(jobs_dir):
+                if entry.startswith(f"job_{job_id.split('_')[1]}"):
+                    job_dir_match = os.path.join(jobs_dir, entry)
+                    audio_path = os.path.join(job_dir_match, "audio.wav")
+                    frames_dir = os.path.join(job_dir_match, "frames")
+                    if os.path.exists(frames_dir):
+                        frames_count = len([f for f in os.listdir(frames_dir) if f.endswith(".jpg")])
+                    break
+    except:
+        pass
 
     if audio_path and os.path.exists(audio_path):
         set_job_progress(job_id, "Transcribing audio...")
@@ -183,13 +232,10 @@ async def _run_mock_job(job_id: str, url: str) -> None:
     else:
         asr_note = "MVP: audio tidak tersedia untuk ASR."
 
-    if asr_note:
-        extraction_note = f"{extraction_note}; {asr_note}" if extraction_note else asr_note
-
     # Get CLIP analysis results
     clip_results = None
-    if isinstance(job_dir, str) and frames_count is not None:
-        frames_dir = os.path.join(job_dir, "frames")
+    if job_dir_match and frames_count:
+        frames_dir = os.path.join(job_dir_match, "frames")
         set_job_progress(job_id, "Menganalisis tampilan visual untuk deteksi AI...")
         ai_score_override, ai_drivers_override = detect_ai_generation_from_frames(
             frames_dir,
@@ -199,21 +245,19 @@ async def _run_mock_job(job_id: str, url: str) -> None:
             video_title=video_title,
             video_description=video_description,
         )
-        clip_results = {
-            'ai_score': ai_score_override,
-            'ai_drivers': ai_drivers_override
-        }
+        clip_results = {"ai_score": ai_score_override, "ai_drivers": ai_drivers_override}
 
     # Use Gemma orchestrator for comprehensive analysis
     set_job_progress(job_id, "Mencari bukti online untuk analisis...")
     from .nlp.misinfo_scoring import orchestrate_comprehensive_analysis
+
     set_job_progress(job_id, "Menganalisis informasi dan hoaks...")
     comprehensive_result, analysis_error = orchestrate_comprehensive_analysis(
         url=url,
         video_title=video_title,
         video_description=video_description,
         transcript=transcript,
-        frames_dir=os.path.join(job_dir, "frames") if isinstance(job_dir, str) else None,
+        frames_dir=os.path.join(job_dir_match, "frames") if job_dir_match else None,
         audio_path=audio_path,
         clip_results=clip_results,
     )
@@ -222,19 +266,19 @@ async def _run_mock_job(job_id: str, url: str) -> None:
     if comprehensive_result:
         comprehensive_analysis = ComprehensiveAnalysis(
             ai_detection=AIDetectionResult(
-                score=comprehensive_result['ai_detection']['score'],
-                confidence=comprehensive_result['ai_detection']['confidence'],
-                explanation=comprehensive_result['ai_detection']['explanation']
+                score=comprehensive_result["ai_detection"]["score"],
+                confidence=comprehensive_result["ai_detection"]["confidence"],
+                explanation=comprehensive_result["ai_detection"]["explanation"],
             ),
             misinformation_analysis=MisinformationAnalysis(
-                score=comprehensive_result['misinformation_analysis']['score'],
-                risk_level=comprehensive_result['misinformation_analysis']['risk_level'],
-                explanation=comprehensive_result['misinformation_analysis']['explanation']
+                score=comprehensive_result["misinformation_analysis"]["score"],
+                risk_level=comprehensive_result["misinformation_analysis"]["risk_level"],
+                explanation=comprehensive_result["misinformation_analysis"]["explanation"],
             ),
             overall_assessment=OverallAssessment(
-                recommendation=comprehensive_result['overall_assessment']['recommendation'],
-                key_findings=comprehensive_result['overall_assessment']['key_findings']
-            )
+                recommendation=comprehensive_result["overall_assessment"]["recommendation"],
+                key_findings=comprehensive_result["overall_assessment"]["key_findings"],
+            ),
         )
         result = AnalysisResult(
             comprehensive_analysis=comprehensive_analysis,
@@ -260,14 +304,16 @@ async def _run_mock_job(job_id: str, url: str) -> None:
         set_job_succeeded(job_id, result.model_dump_json())
 
 
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
-    # Basic validation (MVP). Real pipeline will do deeper URL/media checks.
+@app.post("/extract", response_model=ExtractResponse)
+async def extract(req: AnalyzeRequest) -> ExtractResponse:
+    """Synchronously extract video metadata. Returns metadata immediately."""
     if not req.url.strip():
         raise HTTPException(status_code=400, detail="url is required")
 
@@ -276,8 +322,51 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
     async with db_lock:
         create_job(job_id, url=req.url, source=req.source)
 
-    asyncio.create_task(_run_mock_job(job_id=job_id, url=req.url))
-    return AnalyzeResponse(job_id=job_id)
+    try:
+        extraction = await _extract_video(job_id, req.url)
+        video_title = extraction.get("video_title")
+        video_description = extraction.get("video_description")
+        video_thumbnail_url = extraction.get("video_thumbnail_url")
+
+        # Store partial result with metadata
+        partial_result = AnalysisResult(
+            comprehensive_analysis=None,
+            analysis_error=None,
+            video_title=video_title,
+            video_description=video_description,
+            video_thumbnail_url=video_thumbnail_url,
+        )
+        async with db_lock:
+            set_job_result(job_id, partial_result.model_dump_json())
+            set_job_status(job_id, "extracted")
+
+        return ExtractResponse(
+            job_id=job_id,
+            video_title=video_title,
+            video_description=video_description,
+            video_thumbnail_url=video_thumbnail_url,
+        )
+    except Exception as e:
+        async with db_lock:
+            set_job_failed(job_id, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analyze", response_model=StartAnalysisResponse)
+async def analyze(req: StartAnalysisRequest) -> StartAnalysisResponse:
+    """Start analysis for an extracted job. Returns immediately, analysis runs in background."""
+    job_id = req.job_id
+    record = get_job_record(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    async with db_lock:
+        current_status = record.get("status")
+        if current_status not in ["extracted", "queued"]:
+            raise HTTPException(status_code=400, detail=f"Cannot analyze job in status {current_status}")
+
+    asyncio.create_task(_run_analysis_job(job_id=job_id))
+    return StartAnalysisResponse(job_id=job_id, status="analysis_started")
 
 
 @app.get("/jobs/{job_id}", response_model=JobResultResponse)
@@ -286,7 +375,8 @@ async def get_job(job_id: str) -> JobResultResponse:
     if record is None:
         return JobResultResponse(status="failed", result=None, error="Job not found", progress=None)
 
+    status = record["status"]
     result_json = record.get("result_json")
     result_obj = AnalysisResult.model_validate_json(result_json) if result_json else None
-    return JobResultResponse(status=record["status"], result=result_obj, error=record.get("error"), progress=record.get("progress"))
+    return JobResultResponse(status=status, result=result_obj, error=record.get("error"), progress=record.get("progress"))
 
