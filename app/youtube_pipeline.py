@@ -70,7 +70,7 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
                 "http_headers": {"User-Agent": user_agent},
                 "sleep_interval": 0.5,
                 "max_sleep_interval": 2,
-                "cookiesfrombrowser": ("firefox", "chrome", "chromium"),  # Auto-detect browser cookies
+                "cookiesfrombrowser": ("firefox", "chrome"),  # Auto-detect browser cookies
             }
             
             # Credential source precedence: env override > auto-detect browser > cookie file
@@ -122,7 +122,7 @@ def _get_youtube_metadata(url: str) -> Dict[str, str]:
                 "retries": 1,
                 "socket_timeout": 10,
                 "http_headers": {"User-Agent": user_agent},
-                "cookiesfrombrowser": ("firefox", "chrome", "chromium"),  # Auto-detect browser cookies
+                "cookiesfrombrowser": ("firefox", "chrome"),  # Auto-detect browser cookies
             }
             
             with YoutubeDL(base_opts) as ydl:
