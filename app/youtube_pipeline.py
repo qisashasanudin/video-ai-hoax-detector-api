@@ -18,7 +18,24 @@ USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
 ]
 
-COOKIE_BROWSERS = ["firefox", "edge", "chrome"]
+COOKIE_BROWSERS = ["edge", "chrome", "firefox"]
+
+def _detect_browser_cookie_sources() -> list[str]:
+    # Prefer Microsoft Edge when present on the system.
+    browsers = []
+    if os.path.exists("/Applications/Microsoft Edge.app") or os.path.exists(
+        os.path.expanduser("~/Applications/Microsoft Edge.app")
+    ):
+        browsers.append("edge")
+    if os.path.exists("/Applications/Google Chrome.app") or os.path.exists(
+        os.path.expanduser("~/Applications/Google Chrome.app")
+    ):
+        browsers.append("chrome")
+    if os.path.exists("/Applications/Firefox.app") or os.path.exists(
+        os.path.expanduser("~/Applications/Firefox.app")
+    ):
+        browsers.append("firefox")
+    return browsers or COOKIE_BROWSERS
 
 class YouTubeExtractionError(RuntimeError):
     pass
@@ -54,7 +71,7 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
         },
     ]
 
-    browser_options = [cookies_from_browser] if cookies_from_browser else COOKIE_BROWSERS
+    browser_options = [cookies_from_browser] if cookies_from_browser else _detect_browser_cookie_sources()
     last_error: Optional[Exception] = None
     for attempt_idx, extra in enumerate(attempts):
         for ua_idx, user_agent in enumerate(USER_AGENTS):
@@ -117,7 +134,7 @@ def _get_youtube_metadata(url: str) -> Dict[str, str]:
     
     cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip().lower()
     cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
-    browser_options = [cookies_from_browser] if cookies_from_browser else COOKIE_BROWSERS
+    browser_options = [cookies_from_browser] if cookies_from_browser else _detect_browser_cookie_sources()
 
     for ua_idx, user_agent in enumerate(USER_AGENTS):
         for browser in browser_options:
