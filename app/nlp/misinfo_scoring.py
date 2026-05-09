@@ -190,13 +190,13 @@ def _score_claim_with_gemma(claim: str, context: str, search_evidence: str = "")
 
     full_context = f"{context}{search_evidence}" if search_evidence else context
 
-    prompt = f"""Anda adalah analis misinformasi yang menggunakan bahasa sehari-hari. Jelaskan pakai kata yang mudah dimengerti semua orang.
+    prompt = f"""Anda adalah analis misinformasi yang profesional. Gunakan bahasa Indonesia yang jelas, sopan, dan mudah dipahami oleh pembaca website.
 
 Petunjuk:
 1. Jawab berdasarkan bukti yang ada, jangan hanya tebak-tebakan.
 2. Kalau ada bukti dari hasil pencarian web, ambil satu kutipan langsung dari judul atau deskripsi dan tuliskan dalam penjelasan.
 3. Contoh kutipan bisa seperti: "Reuters bilang: '...'", "BBC menulis: '...'" atau "Menurut Politifact: '...'".
-4. Gunakan bahasa yang ringan, tidak terlalu formal, dan jelaskan seolah kamu sedang ngomong ke teman.
+4. Gunakan bahasa yang sederhana, sopan, dan jelaskan seolah Anda sedang menjelaskan kepada pembaca biasa.
 5. Nilai kemungkinan misinformasi: 0 (berita benar/terpercaya) sampai 1 (palsu/hoax).
 6. Buat penjelasan pendek tapi jelas, dalam Bahasa Indonesia.
 
@@ -344,7 +344,7 @@ def orchestrate_comprehensive_analysis(
 
     context = "\n\n".join(data_parts) + search_evidence_section
 
-    prompt = f"""Anda adalah analis konten video yang ramah dan menggunakan bahasa sehari-hari. Jelaskan seperti sedang ngobrol ke teman, supaya mudah dipahami.
+    prompt = f"""Anda adalah analis konten video yang ramah dan profesional. Gunakan bahasa Indonesia yang jelas, sopan, dan mudah dipahami oleh pembaca website.
 
 DATA VIDEO YANG TERSEDIA:
 {context}
@@ -356,7 +356,7 @@ TUGAS ANDA - BERIKAN ANALISIS YANG JELAS DALAM SATU RESPONS:
 3. **PENILAIAN KESELURUHAN**: Beri skor dan rekomendasi singkat yang mudah dimengerti
 
 PETUNJUK TAMBAHAN:
-- Gunakan bahasa sederhana dan tidak terlalu formal
+- Gunakan bahasa sederhana, sopan, dan mudah dimengerti oleh pembaca website
 - Jika ada bukti dari hasil pencarian web, kutip langsung satu frase atau judul dari hasil itu
 - Contoh kutipan: "Reuters bilang: '...'", "BBC tulis: '...'", atau "Menurut sumber: '...'"
 - Sertakan sumber dengan format [Sumber: URL] jika tersedia

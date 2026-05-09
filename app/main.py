@@ -142,7 +142,7 @@ async def _extract_video(job_id: str, url: str) -> dict:
     Returns dict with video_title, video_description, video_thumbnail_url, job_dir, frames_count, audio_path.
     """
     try:
-        set_job_progress(job_id, "Downloading video...")
+        set_job_progress(job_id, "Menganalisa video...")
         extraction = await extract_youtube_media(
             url=url,
             job_id=job_id,
