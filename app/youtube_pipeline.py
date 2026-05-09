@@ -56,7 +56,7 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
     # Retry with progressively more permissive format/client settings.
     attempts = [
         {
-            "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "extractor_args": {"youtube": {"player_client": ["web", "android", "ios"]}},
         },
         {
