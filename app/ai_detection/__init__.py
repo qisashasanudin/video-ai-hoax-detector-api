@@ -1,0 +1,2 @@
+# AI detection package (MVP).
+
