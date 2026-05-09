@@ -18,6 +18,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
 ]
 
+COOKIE_BROWSERS = ["firefox", "edge", "chrome"]
 
 class YouTubeExtractionError(RuntimeError):
     pass
@@ -32,7 +33,7 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
     ffmpeg_exe = get_ffmpeg_exe()
 
     outtmpl = os.path.join(out_dir, "input.%(ext)s")
-    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip()
+    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip().lower()
     cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
 
     # Retry with progressively more permissive format/client settings.
@@ -53,43 +54,43 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
         },
     ]
 
+    browser_options = [cookies_from_browser] if cookies_from_browser else COOKIE_BROWSERS
     last_error: Optional[Exception] = None
     for attempt_idx, extra in enumerate(attempts):
         for ua_idx, user_agent in enumerate(USER_AGENTS):
-            base_opts = {
-                "outtmpl": outtmpl,
-                "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
-                "retries": 2,
-                "fragment_retries": 2,
-                "socket_timeout": 15,
-                "timeout": max_download_seconds,
-                "ffmpeg_location": ffmpeg_exe,
-                "merge_output_format": "mp4",
-                "http_headers": {"User-Agent": user_agent},
-                "sleep_interval": 0.5,
-                "max_sleep_interval": 2,
-                "cookiesfrombrowser": ("firefox", "chrome"),  # Auto-detect browser cookies
-            }
-            
-            # Credential source precedence: env override > auto-detect browser > cookie file
-            if cookies_from_browser:
-                base_opts["cookiesfrombrowser"] = (cookies_from_browser,)
-            elif cookie_file and os.path.exists(cookie_file):
-                base_opts["cookiefile"] = cookie_file
-            
-            ydl_opts = {**base_opts, **extra}
-            try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    ydl.extract_info(url, download=True)
-                last_error = None
-                return _find_downloaded_file(out_dir, url)
-            except DownloadError as e:
-                last_error = e
-                if ua_idx < len(USER_AGENTS) - 1 or attempt_idx < len(attempts) - 1:
-                    time.sleep(0.5 + attempt_idx * 0.5)  # Backoff delay
-                continue
+            for browser in browser_options:
+                base_opts = {
+                    "outtmpl": outtmpl,
+                    "noplaylist": True,
+                    "quiet": True,
+                    "no_warnings": True,
+                    "retries": 2,
+                    "fragment_retries": 2,
+                    "socket_timeout": 15,
+                    "timeout": max_download_seconds,
+                    "ffmpeg_location": ffmpeg_exe,
+                    "merge_output_format": "mp4",
+                    "http_headers": {"User-Agent": user_agent},
+                    "sleep_interval": 0.5,
+                    "max_sleep_interval": 2,
+                }
+
+                if cookie_file and os.path.exists(cookie_file):
+                    base_opts["cookiefile"] = cookie_file
+                else:
+                    base_opts["cookiesfrombrowser"] = browser
+
+                ydl_opts = {**base_opts, **extra}
+                try:
+                    with YoutubeDL(ydl_opts) as ydl:
+                        ydl.extract_info(url, download=True)
+                    last_error = None
+                    return _find_downloaded_file(out_dir, url)
+                except DownloadError as e:
+                    last_error = e
+                    if ua_idx < len(USER_AGENTS) - 1 or attempt_idx < len(attempts) - 1 or browser != browser_options[-1]:
+                        time.sleep(0.5 + attempt_idx * 0.5)  # Backoff delay
+                    continue
 
     if last_error is not None:
         raise YouTubeExtractionError(f"unable to download video data: {last_error}") from last_error
@@ -114,34 +115,42 @@ def _get_youtube_metadata(url: str) -> Dict[str, str]:
     """
     import logging
     
+    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip().lower()
+    cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
+    browser_options = [cookies_from_browser] if cookies_from_browser else COOKIE_BROWSERS
+
     for ua_idx, user_agent in enumerate(USER_AGENTS):
-        try:
-            base_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "retries": 1,
-                "socket_timeout": 10,
-                "http_headers": {"User-Agent": user_agent},
-                "cookiesfrombrowser": ("firefox", "chrome"),  # Auto-detect browser cookies
-            }
-            
-            with YoutubeDL(base_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+        for browser in browser_options:
+            try:
+                base_opts = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "retries": 1,
+                    "socket_timeout": 10,
+                    "http_headers": {"User-Agent": user_agent},
+                }
+                if cookie_file and os.path.exists(cookie_file):
+                    base_opts["cookiefile"] = cookie_file
+                else:
+                    base_opts["cookiesfrombrowser"] = browser
+                    
+                with YoutubeDL(base_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    
+                title = info.get("title", "Video")
+                thumbnail = info.get("thumbnail", "")
+                description = info.get("description", "")
                 
-            title = info.get("title", "Video")
-            thumbnail = info.get("thumbnail", "")
-            description = info.get("description", "")
-            
-            return {
-                "title": str(title) if title else "Video",
-                "thumbnail_url": str(thumbnail) if thumbnail else "",
-                "description": str(description) if description else "",
-            }
-        except Exception as e:
-            if ua_idx < len(USER_AGENTS) - 1:
-                time.sleep(0.3)
-                continue
-            logging.warning(f"Failed to extract metadata for {url}: {e}")
+                return {
+                    "title": str(title) if title else "Video",
+                    "thumbnail_url": str(thumbnail) if thumbnail else "",
+                    "description": str(description) if description else "",
+                }
+            except Exception as e:
+                if ua_idx < len(USER_AGENTS) - 1 or browser != browser_options[-1]:
+                    time.sleep(0.3)
+                    continue
+                logging.warning(f"Failed to extract metadata for {url}: {e}")
     
     # Graceful fallback when all attempts fail
     return {
