@@ -190,25 +190,24 @@ def _score_claim_with_gemma(claim: str, context: str, search_evidence: str = "")
 
     full_context = f"{context}{search_evidence}" if search_evidence else context
 
-    prompt = f"""Anda adalah analis misinformasi yang ketat. Analisis klaim ini untuk potensi informasi palsu atau menyesatkan.
+    prompt = f"""Anda adalah analis misinformasi yang menggunakan bahasa sehari-hari. Jelaskan pakai kata yang mudah dimengerti semua orang.
 
-Kerangka Analisis Berbasis Bukti:
-1. Evaluasi konten berdasarkan bukti yang tersedia, bukan asumsi
-2. Jangan anggap konten sebagai misinformasi hanya karena menggambarkan peristiwa yang tidak biasa atau mustahil secara fisik; pertimbangkan apakah disajikan sebagai fiksi, hipotetis, atau kreatif
-3. AI-generated content bukanlah misinformasi secara inheren; evaluasi apakah dimaksudkan untuk menipu atau jika jelas diberi label sebagai sintetis
-4. Pertimbangkan SEMUA bukti yang tersedia, terutama hasil pencarian jika disediakan
-5. Identifikasi kontradiksi atau sensasionalisme berdasarkan bukti konkret
-6. Nilai kemungkinan misinformasi: 0 (benar) sampai 1 (palsu/misinformasi)
-7. Berikan penjelasan yang jelas dan ringkas dalam Bahasa Indonesia saja
+Petunjuk:
+1. Jawab berdasarkan bukti yang ada, jangan hanya tebak-tebakan.
+2. Kalau ada bukti dari hasil pencarian web, ambil satu kutipan langsung dari judul atau deskripsi dan tuliskan dalam penjelasan.
+3. Contoh kutipan bisa seperti: "Reuters bilang: '...'", "BBC menulis: '...'" atau "Menurut Politifact: '...'".
+4. Gunakan bahasa yang ringan, tidak terlalu formal, dan jelaskan seolah kamu sedang ngomong ke teman.
+5. Nilai kemungkinan misinformasi: 0 (berita benar/terpercaya) sampai 1 (palsu/hoax).
+6. Buat penjelasan pendek tapi jelas, dalam Bahasa Indonesia.
 
 Klaim: {claim}
 
 Konteks dan Bukti:
 {full_context}
 
-Respons dengan objek JSON yang valid TUNGGAL saja. Tidak ada penalaran, proses berpikir, atau teks tambahan.
+Respons dengan objek JSON yang valid TUNGGAL saja. Tidak ada penjelasan proses berpikir, hanya jawaban final.
 Gunakan kunci persis: "score" dan "explanation".
-Contoh: {{"score": 0.85, "explanation": "Konten ini menampilkan peristiwa mustahil secara fisik seperti salju di Indonesia, yang merupakan misinformasi meskipun diberi label kreatif."}}"""
+Contoh: {{"score": 0.85, "explanation": "Reuters bilang '...'; jadi kemungkinan isi ini hoax karena ..."}}"""
 
     if isinstance(model, str) and model.startswith(_OLLAMA_MODEL_PREFIX):
         return _score_claim_with_ollama(model, prompt)
@@ -345,27 +344,24 @@ def orchestrate_comprehensive_analysis(
 
     context = "\n\n".join(data_parts) + search_evidence_section
 
-    prompt = f"""Anda adalah analis konten video yang komprehensif dan ketat. Analisis video ini secara menyeluruh untuk mendeteksi misinformasi, konten AI-generated, dan memberikan penilaian keseluruhan.
+    prompt = f"""Anda adalah analis konten video yang ramah dan menggunakan bahasa sehari-hari. Jelaskan seperti sedang ngobrol ke teman, supaya mudah dipahami.
 
 DATA VIDEO YANG TERSEDIA:
 {context}
 
-TUGAS ANDA - BERIKAN ANALISIS KOMPREHENSIF DALAM SATU RESPONS:
+TUGAS ANDA - BERIKAN ANALISIS YANG JELAS DALAM SATU RESPONS:
 
-1. **DETEKSI AI-GENERATED CONTENT**: Analisis apakah video ini dihasilkan oleh AI/deepfake berdasarkan semua data yang tersedia
-2. **ANALISIS MISINFORMASI**: Evaluasi apakah konten video mengandung informasi palsu atau menyesatkan
-3. **PENILAIAN KESELURUHAN**: Berikan skor dan penjelasan komprehensif
+1. **DETEKSI AI-GENERATED CONTENT**: Jelaskan apakah video ini terkesan dibuat oleh AI/deepfake berdasarkan data yang tersedia
+2. **ANALISIS MISINFORMASI**: Tulis apakah video ini mengandung informasi palsu, berlebihan, atau menyesatkan
+3. **PENILAIAN KESELURUHAN**: Beri skor dan rekomendasi singkat yang mudah dimengerti
 
-KERANGKA ANALISIS BERBASIS BUKTI:
-- Evaluasi konten berdasarkan bukti yang tersedia, bukan asumsi
-- Jangan anggap konten sebagai misinformasi hanya karena menggambarkan peristiwa yang tidak biasa atau mustahil secara fisik; pertimbangkan apakah disajikan sebagai fiksi, hipotetis, atau kreatif
-- Konten AI-generated bukanlah misinformasi secara inheren; evaluasi apakah dimaksudkan untuk menipu atau jika jelas diberi label sebagai sintetis
-- Konten dari sumber media terkemuka seperti Reuters, BBC, CNN dianggap kredibel meskipun topiknya kontroversial
-- Klaim tentang peristiwa publik atau pernyataan resmi dari tokoh politik tidak otomatis hoax; nilai berdasarkan konteks dan sumber
-- Jika tidak ada bukti manipulasi visual/audio, berikan skor AI rendah
-- Jika klaim berasal dari sumber kredibel dan tidak bertentangan dengan fakta umum, berikan risiko misinformasi rendah
-- Pertimbangkan semua bukti: visual, audio, tekstual, metadata
-- Identifikasi kontradiksi, sensasionalisme, atau manipulasi berdasarkan bukti konkret
+PETUNJUK TAMBAHAN:
+- Gunakan bahasa sederhana dan tidak terlalu formal
+- Jika ada bukti dari hasil pencarian web, kutip langsung satu frase atau judul dari hasil itu
+- Contoh kutipan: "Reuters bilang: '...'", "BBC tulis: '...'", atau "Menurut sumber: '...'"
+- Sertakan sumber dengan format [Sumber: URL] jika tersedia
+- Fokus pada fakta yang nyata dari bukti, jangan bertele-tele
+- Jika tidak ada bukti pencarian, analisis berdasarkan data video dan konteks yang tersedia
 
 RESPONSI HARUS DALAM FORMAT JSON YANG VALID DENGAN STRUKTUR BERIKUT:
 
@@ -373,31 +369,25 @@ RESPONSI HARUS DALAM FORMAT JSON YANG VALID DENGAN STRUKTUR BERIKUT:
   "ai_detection": {{
     "score": 0.0-1.0,
     "confidence": "TINGGI/SEDANG/RENDAH",
-    "explanation": "Penjelasan detail dalam Bahasa Indonesia tentang mengapa konten ini terdeteksi/diduga AI-generated"
+    "explanation": "Penjelasan singkat dalam bahasa Indonesia yang sederhana"
   }},
   "misinformation_analysis": {{
     "score": 0.0-1.0,
     "risk_level": "TINGGI/SEDANG/RENDAH/TIDAK ADA",
-    "explanation": "Penjelasan detail dalam Bahasa Indonesia tentang analisis misinformasi"
+    "explanation": "Penjelasan singkat dalam bahasa Indonesia yang mudah dimengerti"
   }},
   "overall_assessment": {{
-    "recommendation": "Teks rekomendasi untuk penonton dalam Bahasa Indonesia",
+    "recommendation": "Rekomendasi singkat untuk penonton dalam bahasa Indonesia",
     "key_findings": ["Poin penting 1", "Poin penting 2", "Poin penting 3"]
   }}
 }}
 
 PENTING:
 - Semua teks dalam Bahasa Indonesia saja
-- Output HANYA objek JSON. Jangan sertakan teks pengantar, penjelasan, atau konten tambahan. Respons harus dimulai dengan {{ dan diakhiri dengan }}
-- Sertakan referensi URL dari BUKTI PENCARIAN WEB dalam penjelasan jika tersedia
-- Jika ada bukti pencarian, sebutkan minimal 1 URL dalam format [Sumber: URL] di akhir penjelasan
-- Jika tidak ada bukti pencarian yang relevan, jangan masukkan teks '[Sumber: Tidak ditemukan...]'
-- Jika pencarian web tidak tersedia, analisis misinformasi berdasarkan data internal dan pengetahuan umum; jangan asumsikan manipulasi tanpa bukti
-- Analisis AI Detection dapat dilanjutkan meskipun pencarian web tidak tersedia
-- Prioritaskan sumber yang tampak kredibel, seperti media besar, ensiklopedia resmi, pemeriksa fakta, atau publikasi pemerintah
-- Jangan tambahkan skor kredibilitas terpisah di luar struktur yang diminta
-- Berikan penjelasan yang detail dan berdasarkan bukti
-- Jangan tambahkan teks di luar JSON
+- Output HANYA objek JSON. Jangan sertakan teks pengantar, penjelasan proses, atau tambahan lain
+- Jika ada bukti pencarian, gunakan setidaknya satu kutipan langsung dari judul atau deskripsi hasil pencarian
+- Tulis [Sumber: URL] dalam penjelasan jika bukti web search tersedia
+- Jangan gunakan bahasa formal berat
 - Pastikan JSON valid"""
 
     if isinstance(model, str) and model.startswith(_OLLAMA_MODEL_PREFIX):
