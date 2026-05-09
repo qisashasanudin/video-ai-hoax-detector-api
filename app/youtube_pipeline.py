@@ -70,9 +70,10 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
                 "http_headers": {"User-Agent": user_agent},
                 "sleep_interval": 0.5,
                 "max_sleep_interval": 2,
+                "cookiesfrombrowser": ("firefox", "chrome", "chromium"),  # Auto-detect browser cookies
             }
             
-            # Credential source precedence
+            # Credential source precedence: env override > auto-detect browser > cookie file
             if cookies_from_browser:
                 base_opts["cookiesfrombrowser"] = (cookies_from_browser,)
             elif cookie_file and os.path.exists(cookie_file):
@@ -109,7 +110,7 @@ def _get_youtube_metadata(url: str) -> Dict[str, str]:
     """
     Extract video metadata (title and thumbnail) from YouTube URL.
     Returns dict with 'title' and 'thumbnail_url' keys.
-    Gracefully degrades if extraction fails using user-agent rotation.
+    Gracefully degrades if extraction fails using user-agent rotation + browser cookies.
     """
     import logging
     
@@ -121,6 +122,7 @@ def _get_youtube_metadata(url: str) -> Dict[str, str]:
                 "retries": 1,
                 "socket_timeout": 10,
                 "http_headers": {"User-Agent": user_agent},
+                "cookiesfrombrowser": ("firefox", "chrome", "chromium"),  # Auto-detect browser cookies
             }
             
             with YoutubeDL(base_opts) as ydl:
