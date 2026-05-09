@@ -78,7 +78,7 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
                 if cookie_file and os.path.exists(cookie_file):
                     base_opts["cookiefile"] = cookie_file
                 else:
-                    base_opts["cookiesfrombrowser"] = browser
+                    base_opts["cookiesfrombrowser"] = (browser,)
 
                 ydl_opts = {**base_opts, **extra}
                 try:
@@ -132,7 +132,7 @@ def _get_youtube_metadata(url: str) -> Dict[str, str]:
                 if cookie_file and os.path.exists(cookie_file):
                     base_opts["cookiefile"] = cookie_file
                 else:
-                    base_opts["cookiesfrombrowser"] = browser
+                    base_opts["cookiesfrombrowser"] = (browser,)
                     
                 with YoutubeDL(base_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
