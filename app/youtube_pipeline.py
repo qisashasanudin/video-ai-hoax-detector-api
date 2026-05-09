@@ -56,10 +56,7 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
     # Retry with progressively more permissive format/client settings.
     attempts = [
         {
-            "format": (
-                "bv*[ext=mp4][height<=720]+ba[ext=m4a]/"
-                "bv*[ext=mp4][height<=720]+ba/b[ext=mp4]/best"
-            ),
+            "format": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
             "extractor_args": {"youtube": {"player_client": ["web", "android", "ios"]}},
         },
         {
@@ -87,6 +84,7 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
                     "timeout": max_download_seconds,
                     "ffmpeg_location": ffmpeg_exe,
                     "merge_output_format": "mp4",
+                    "allow_unplayable_formats": True,
                     "http_headers": {"User-Agent": user_agent},
                     "sleep_interval": 0.5,
                     "max_sleep_interval": 2,
