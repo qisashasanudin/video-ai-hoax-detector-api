@@ -51,7 +51,11 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ### Fallback behavior
 
-If the configured model cannot be loaded, the backend falls back to keyword- and evidence-driven misinfo scoring rather than failing completely.
+If the configured model cannot be loaded, the backend falls back to a more limited analysis:
+
+- preserves technical frame-based AI detection if available,
+- marks `hoax_analysis` and `misinformation_analysis` as unavailable when the model is missing,
+- returns a job result instead of failing completely.
 
 ## API Endpoints
 
@@ -81,7 +85,7 @@ If the configured model cannot be loaded, the backend falls back to keyword- and
   - `asr.py` transcribes audio from the video.
   - `claim_extractor.py` extracts candidate claims from title, description, and transcript.
   - `misinfo_scoring.py` builds evidence context and uses a local LLM or fallback logic to score misinformation.
-  - `web_search.py` retrieves search evidence for claim verification using the Bing RSS search feed only.
+- `app/nlp/web_search.py` retrieves search evidence for claim verification using Bing HTML search primarily, with Yahoo HTML search as a fallback when needed.
 
 ### Data and persistence
 

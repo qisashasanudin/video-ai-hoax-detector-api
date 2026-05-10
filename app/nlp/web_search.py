@@ -1,8 +1,9 @@
+import html as html_lib
 import logging
 import re
 import unicodedata
 from typing import Dict, List, Optional
-from urllib.parse import quote_plus, unquote
+from urllib.parse import quote_plus, unquote, urlparse
 
 import requests
 
@@ -50,26 +51,16 @@ def _query_variations(query: str) -> List[str]:
     if "news" not in query_lower:
         variations.append(f"{normalized} news")
 
-    trusted_outlets = [
-        "Reuters",
-        "BBC News",
-        "Al Jazeera",
-        "AP News",
-        "CNN",
-        "The Guardian",
-        "Kompas",
-        "Detik",
-        "Tempo",
-        "The Jakarta Post",
-        "Channel NewsAsia",
-        "The Straits Times",
-        "South China Morning Post",
-        "Nikkei Asia",
-        "Bloomberg",
-        "Al Arabiya",
+    source_hints = [
+        "news",
+        "official news",
+        "press release",
+        "news article",
+        "media report",
+        "breaking news",
     ]
 
-    outlet_queries = [f"{normalized} {outlet}" for outlet in trusted_outlets if outlet.lower() not in query_lower]
+    outlet_queries = [f"{normalized} {hint}" for hint in source_hints if hint not in query_lower]
     variations.extend(outlet_queries[:6])
 
     if len(normalized) < 150 and '"' not in normalized:
@@ -106,39 +97,60 @@ def _extract_results(search_results, max_results: int) -> List[Dict[str, str]]:
     return results
 
 
+def _has_authority_markers(text: str) -> bool:
+    markers = [
+        "news",
+        "press",
+        "media",
+        "report",
+        "article",
+        "official",
+        "broadcast",
+        "statement",
+        "breaking",
+        "journal",
+        "daily",
+        "times",
+        "post",
+        "tribune",
+        "herald",
+        "gazette",
+        "insider",
+        "bulletin",
+    ]
+    return any(marker in text for marker in markers)
+
+
+def _is_authoritative_url(url: str) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(url.lower())
+    host = parsed.netloc or url.lower()
+    if any(marker in host for marker in [
+        "news",
+        "press",
+        "media",
+        "times",
+        "daily",
+        "post",
+        "journal",
+        "broadcast",
+        "tribune",
+        "herald",
+        "gazette",
+        "insider",
+        "bulletin",
+    ]):
+        return True
+    return False
+
+
 def _score_search_result(item: Dict[str, str], query: str) -> int:
     title = (item.get("title") or "").lower()
     snippet = (item.get("snippet") or "").lower()
     url = (item.get("url") or "").lower()
 
     score = 0
-
-    trusted_domains = [
-        "reuters.com",
-        "bbc.com",
-        "aljazeera.com",
-        "apnews.com",
-        "kompas.com",
-        "detik.com",
-        "cnn.com",
-        "theguardian.com",
-        "nytimes.com",
-        "cbsnews.com",
-        "npr.org",
-        "straitstimes.com",
-        "channelnewsasia.com",
-        "scmp.com",
-        "asia.nikkei.com",
-        "bloomberg.com",
-        "alarabiya.net",
-    ]
-    for trusted in trusted_domains:
-        if trusted in url:
-            score += 25
-
-    if any(blocked in url for blocked in ["aliexpress", "alibaba", "amazon", "shop", "esquire"]):
-        score -= 80
-
     query_terms = set(re.findall(r"\w+", query.lower()))
     overlap = 0
     for term in query_terms:
@@ -146,6 +158,17 @@ def _score_search_result(item: Dict[str, str], query: str) -> int:
             continue
         if term in title or term in snippet:
             overlap += 1
+
+    if _is_authoritative_url(url):
+        score += 18
+    if _has_authority_markers(url):
+        score += 8
+    if _has_authority_markers(title) or _has_authority_markers(snippet):
+        score += 8
+
+    if any(blocked in url for blocked in ["aliexpress", "alibaba", "amazon", "shop", "esquire"]):
+        score -= 80
+
     score += min(overlap, 8) * 3
 
     return score
@@ -165,7 +188,8 @@ def _search_yahoo_html(query: str, max_results: int = 5) -> List[Dict[str, str]]
 
     url = f"https://search.yahoo.com/search?p={quote_plus(query)}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     }
 
     try:
@@ -207,7 +231,45 @@ def _search_yahoo_html(query: str, max_results: int = 5) -> List[Dict[str, str]]
 
         return results
     except Exception as e:
-        logger.debug(f"Yahoo HTML search failed for query '{query}': {e}")
+        logger.warning("Yahoo HTML search failed for query '%s': %s", query, e)
+        return []
+
+
+def _search_bing_html(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    if not query:
+        return []
+
+    url = f"https://www.bing.com/search?q={quote_plus(query)}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=SEARCH_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        html = response.text
+
+        results = []
+        for match in re.finditer(
+            r'<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>\s*</h2>',
+            html,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            href = html_lib.unescape(match.group(1))
+            title = _strip_html_tags(match.group(2))
+            snippet = ""
+            after_anchor = html[match.end() : match.end() + 400]
+            snippet_match = re.search(r'<p[^>]*>(.*?)</p>', after_anchor, re.IGNORECASE | re.DOTALL)
+            if snippet_match:
+                snippet = _strip_html_tags(snippet_match.group(1))
+            results.append({"title": title[:120], "snippet": snippet, "url": href})
+            if len(results) >= max_results:
+                break
+
+        return results
+    except Exception as e:
+        logger.warning("Bing HTML search failed for query '%s': %s", query, e)
         return []
 
 
@@ -224,7 +286,13 @@ def search_web(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     seen_urls = set()
 
     for current_query in queries:
-        search_results = _search_yahoo_html(current_query, max_results=max_results * 2)
+        search_results = _search_bing_html(current_query, max_results=max_results * 2)
+        if search_results:
+            logger.info("Bing returned results for query '%s'", current_query)
+        else:
+            logger.info("Bing returned no results for query '%s'; falling back to Yahoo", current_query)
+            search_results = _search_yahoo_html(current_query, max_results=max_results * 2)
+
         candidate_results = _extract_results(search_results, max_results=max_results * 2)
 
         for item in candidate_results:
@@ -236,7 +304,8 @@ def search_web(query: str, max_results: int = 5) -> List[Dict[str, str]]:
             all_results.append({"score": item_score, **item})
 
     if not all_results:
-        logger.debug(f"No search results for query: {normalized_query}")
+        logger.info("Web search returned no results for query: %s", normalized_query)
+        print(f"[WEB SEARCH] No results for query: {normalized_query}", flush=True)
         return []
 
     all_results.sort(key=lambda item: item["score"], reverse=True)
@@ -244,4 +313,17 @@ def search_web(query: str, max_results: int = 5) -> List[Dict[str, str]]:
         {"title": item["title"], "snippet": item["snippet"], "url": item["url"]}
         for item in all_results[:max_results]
     ]
+
+    if ranked_results:
+        logger.info("Web search results for query '%s':", normalized_query)
+        print(f"[WEB SEARCH] Query: {normalized_query}", flush=True)
+        for idx, item in enumerate(ranked_results, start=1):
+            title = item.get("title", "(no title)")
+            url = item.get("url", "")
+            logger.info("  %d. %s -> %s", idx, title, url)
+            print(f"[WEB SEARCH] {idx}. {title} -> {url}", flush=True)
+    else:
+        logger.info("Web search returned no results for query '%s'", normalized_query)
+        print(f"[WEB SEARCH] No results for query: {normalized_query}")
+
     return ranked_results

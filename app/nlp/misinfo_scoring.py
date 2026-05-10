@@ -373,6 +373,119 @@ def _hash_string(s: str) -> int:
     return abs(h)
 
 
+def _normalize_channel_name(channel: Optional[str]) -> str:
+    if not channel:
+        return ""
+    return re.sub(r"[^a-z0-9]+", " ", channel.lower()).strip()
+
+
+def _is_trusted_channel(channel: Optional[str]) -> bool:
+    if not channel:
+        return False
+    normalized = _normalize_channel_name(channel)
+    trusted_keywords = [
+        "news",
+        "official",
+        "tv",
+        "channel",
+        "berita",
+        "press",
+        "media",
+        "report",
+        "resmi",
+    ]
+    return any(keyword in normalized for keyword in trusted_keywords)
+
+
+def _is_trusted_search_item(item: Dict[str, str], claim: str) -> bool:
+    url = (item.get("url") or "").lower()
+    title = (item.get("title") or "").lower()
+    snippet = (item.get("snippet") or "").lower()
+
+    authority_markers = [
+        "news",
+        "press",
+        "media",
+        "report",
+        "article",
+        "official",
+        "broadcast",
+        "statement",
+        "breaking",
+        "journal",
+        "daily",
+        "times",
+        "post",
+        "tribune",
+        "herald",
+        "gazette",
+        "insider",
+        "bulletin",
+    ]
+
+    claim_terms = set(re.findall(r"\w{4,}", claim.lower()))
+    if not claim_terms:
+        return True
+
+    overlap = sum(1 for term in claim_terms if term in title or term in snippet)
+    if overlap < 1:
+        return False
+
+    if any(marker in url for marker in authority_markers):
+        return overlap >= max(1, min(3, len(claim_terms)))
+
+    if any(marker in title or marker in snippet for marker in authority_markers):
+        return overlap >= 2
+
+    return False
+
+
+def _has_strong_credible_confirmation(claim_evidence: Dict[str, List[Dict[str, str]]], video_channel: Optional[str]) -> bool:
+    confirmed_count = 0
+    total_claims = len(claim_evidence)
+    for claim, results in claim_evidence.items():
+        if not results:
+            continue
+        if any(_is_trusted_search_item(item, claim) for item in results):
+            confirmed_count += 1
+    if confirmed_count >= max(1, total_claims // 2):
+        return True
+    if _is_trusted_channel(video_channel) and confirmed_count > 0:
+        return True
+    return False
+
+
+def _clamp_hoax_and_misinformation_result(
+    result: Dict[str, any],
+    claim_evidence: Dict[str, List[Dict[str, str]]],
+    video_channel: Optional[str],
+) -> Dict[str, any]:
+    if not result:
+        return result
+
+    trusted_confirmation = _has_strong_credible_confirmation(claim_evidence, video_channel)
+    if not trusted_confirmation:
+        return result
+
+    if isinstance(result.get("hoax_analysis"), dict):
+        hoax_score = float(result["hoax_analysis"].get("score", 0.0))
+        if hoax_score > 0.35:
+            result["hoax_analysis"]["score"] = 0.25
+            result["hoax_analysis"]["risk_level"] = "RENDAH"
+            result["hoax_analysis"]["explanation"] = (
+                "Bukti dari outlet berita kredibel mendukung klaim ini; kemungkinan hoax diturunkan."
+            )
+    if isinstance(result.get("misinformation_analysis"), dict):
+        misinfo_score = float(result["misinformation_analysis"].get("score", 0.0))
+        if misinfo_score > 0.35:
+            result["misinformation_analysis"]["score"] = 0.25
+            result["misinformation_analysis"]["risk_level"] = "RENDAH"
+            result["misinformation_analysis"]["explanation"] = (
+                "Bukti dari outlet berita kredibel mendukung klaim ini; kemungkinan misinformasi diturunkan."
+            )
+    return result
+
+
 def _extract_json_from_response(response: str) -> Tuple[Optional[Dict[str, any]], Optional[str]]:
     """Extract and parse JSON from model response, handling common formatting issues."""
     if not response:
@@ -453,6 +566,7 @@ def orchestrate_comprehensive_analysis(
     url: str,
     video_title: Optional[str] = None,
     video_description: Optional[str] = None,
+    video_channel: Optional[str] = None,
     transcript: Optional[str] = None,
     frames_dir: Optional[str] = None,
     audio_path: Optional[str] = None,
@@ -468,35 +582,49 @@ def orchestrate_comprehensive_analysis(
             progress_callback(message)
         logger.info(message)
     
+    claims: List[str] = []
     model, tokenizer = _get_gemma_model()
     if model is None:
         # Fallback analysis when model is not available
         update_progress("Menggunakan analisis fallback (model tidak tersedia)")
+        claims = _extract_claims(video_title, video_description, transcript)
+
+        ai_score = 0.5
+        ai_explanation = "Model AI tidak tersedia untuk analisis mendalam."
+        if clip_results:
+            clip_score = clip_results.get("ai_score")
+            if isinstance(clip_score, (int, float)):
+                ai_score = _clamp01(float(clip_score))
+                ai_explanation = "Deteksi teknis AI berdasarkan analisis frame visual."
+                clip_drivers = clip_results.get("ai_drivers") or []
+                if clip_drivers:
+                    ai_explanation += " " + " ".join(clip_drivers[:3])
+
         fallback_result = {
             "ai_detection": {
-                "score": 0.5,
+                "score": ai_score,
                 "confidence": "SEDANG",
-                "explanation": "Model AI tidak tersedia, menggunakan estimasi berdasarkan metadata video."
+                "explanation": ai_explanation,
             },
             "hoax_analysis": {
-                "score": 0.3,
-                "risk_level": "SEDANG",
-                "explanation": "Model analisis tidak tersedia, menggunakan estimasi berdasarkan pencarian web."
+                "score": 0.0,
+                "risk_level": "TIDAK ADA",
+                "explanation": "Analisis hoax tidak tersedia karena model misinfo tidak terkonfigurasi.",
             },
             "misinformation_analysis": {
-                "score": 0.2,
-                "risk_level": "RENDAH",
-                "explanation": "Model analisis tidak tersedia, menggunakan estimasi berdasarkan pencarian web."
+                "score": 0.0,
+                "risk_level": "TIDAK ADA",
+                "explanation": "Analisis misinformasi tidak tersedia karena model misinfo tidak terkonfigurasi.",
             },
             "overall_assessment": {
-                "recommendation": "Verifikasi informasi dari sumber terpercaya sebelum menyebarkan.",
+                "recommendation": "Model analisis tidak tersedia; verifikasi manual dengan sumber tepercaya.",
                 "key_findings": [
-                    "Model AI tidak tersedia untuk analisis mendalam",
-                    "Estimasi risiko berdasarkan metadata video",
-                    "Disarankan verifikasi manual dari sumber kredibel"
+                    "Model AI/Hoax tidak tersedia untuk analisis mendalam",
+                    "Deteksi AI teknis menggunakan analisis frame visual jika tersedia",
+                    "Verifikasi manual direkomendasikan"
                 ]
             },
-            "claims": claims
+            "claims": claims,
         }
         return fallback_result, None
 
@@ -507,6 +635,8 @@ def orchestrate_comprehensive_analysis(
         data_parts.append(f"JUDUL VIDEO: {video_title}")
     if video_description:
         data_parts.append(f"DESKRIPSI VIDEO: {video_description}")
+    if video_channel:
+        data_parts.append(f"CHANNEL VIDEO: {video_channel}")
     if transcript:
         data_parts.append(f"TRANSCRIPT AUDIO: {transcript[:2000]}")
     data_parts.append(f"URL VIDEO: {url}")
@@ -564,6 +694,14 @@ def orchestrate_comprehensive_analysis(
         search_results = search_web(claim, max_results=3)
         claim_evidence[claim] = search_results if search_results else []
 
+    search_has_evidence = any(len(results) > 0 for results in claim_evidence.values())
+    hoax_analysis_unavailable_reason = None
+    if not search_has_evidence:
+        hoax_analysis_unavailable_reason = (
+            "Web search tidak menemukan bukti yang dapat digunakan untuk analisis hoax. "
+            "Hoax analysis tidak tersedia karena tidak ada hasil pencarian yang dapat diverifikasi."
+        )
+
     # Build evidence section with all claims
     evidence_lines = []
     for claim, results in claim_evidence.items():
@@ -610,7 +748,7 @@ TENTANG MISINFORMASI:
 - Fakta yang sensitif atau kontroversial BUKAN misinformasi jika dapat diverifikasi dari sumber kredibel
 - Video dari channel berita resmi cenderung menceritakan klaim autentik, bukan manipulasi
 - Jika ada bukti web search yang menegaskan klaim video, klasifikasi sebagai BUKAN misinformasi (score rendah)
-- Utamakan sumber berita kredibel seperti Reuters, BBC, AP, CNN, Guardian, Kompas, atau Detik saat menilai klaim
+- Utamakan sumber berita kredibel seperti Reuters, BBC, AP, CNN, Guardian, Kompas, Detik, dan sebagainya saat menilai klaim
 - Jika tidak ada hasil pencarian dari sumber terverifikasi, jelaskan bahwa berita hoax tidak dapat dikonfirmasi dengan bukti yang tersedia
 - Hanya berikan score tinggi jika ada bukti objektif bahwa informasi SALAH atau telah dikemas secara menyesatkan
 
@@ -702,7 +840,10 @@ ATURAN WAJIB:
 
     update_progress("Menunggu hasil analisis dari model LLM...")
     if isinstance(model, str) and model.startswith(_OLLAMA_MODEL_PREFIX):
-        return _orchestrate_with_ollama(model, prompt, claims)
+        result, parse_error = _orchestrate_with_ollama(model, prompt, claims)
+        if result:
+            result = _clamp_hoax_and_misinformation_result(result, claim_evidence, video_channel)
+        return result, parse_error
 
     try:
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -715,6 +856,10 @@ ATURAN WAJIB:
             update_progress("Analisis selesai!")
             # Add claims to the result
             result["claims"] = claims
+            result = _clamp_hoax_and_misinformation_result(result, claim_evidence, video_channel)
+            if not search_has_evidence:
+                result.pop("hoax_analysis", None)
+                return result, hoax_analysis_unavailable_reason
             return result, None
         else:
             return None, parse_error

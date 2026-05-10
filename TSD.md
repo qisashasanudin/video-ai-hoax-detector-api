@@ -40,7 +40,7 @@ The API backend accepts YouTube URLs, queues asynchronous video analysis jobs, a
   - `asr.py`: audio transcription.
   - `claim_extractor.py`: claim extraction from title, description, and transcript.
   - `misinfo_scoring.py`: evidence orchestration, prompt building, and scoring.
-  - `web_search.py`: search evidence retrieval using Bing RSS as the single search source.
+  - `app/nlp/web_search.py`: search evidence retrieval using Bing HTML search first, with Yahoo HTML search as a fallback for resilience.
 
 ### Data flow
 
@@ -133,6 +133,6 @@ Artifacts such as extracted frames and audio are stored under `api/data/jobs/` f
 
 ## Limitations
 
-- This backend is an MVP and may fall back to heuristic scoring when models or media extraction fail.
+- This backend is an MVP and may fall back to heuristic scoring when models or media extraction fail. If the misinfo model is unavailable, AI detection will still use technical frame analysis if possible, while hoax/misinformation scores are marked as unavailable.
 - Only YouTube video analysis is supported at this stage.
 - The system is intended for developer experimentation rather than production deployment.

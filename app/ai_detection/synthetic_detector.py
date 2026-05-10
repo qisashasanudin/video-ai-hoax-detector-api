@@ -51,6 +51,63 @@ def _extract_vit_embeddings(frames: List[np.ndarray], model_name: str = "ViT-B/3
         return np.array([])
 
 
+def _estimate_clip_prompt_synthetic_score(frames: List[np.ndarray]) -> Tuple[float, str]:
+    """
+    Estimate synthetic likelihood using CLIP similarity to real vs synthetic prompts.
+    """
+    try:
+        import clip
+        import torch
+        from PIL import Image
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model, preprocess = clip.load("ViT-B/32", device=device, jit=False)
+        model.eval()
+
+        real_prompts = [
+            "a real video frame from a news broadcast",
+            "a live action video frame from a real documentary",
+            "a natural video frame recorded from a camera",
+        ]
+        synthetic_prompts = [
+            "an AI generated video frame",
+            "a computer generated video frame",
+            "a deepfake video frame",
+            "an artificial intelligence created video clip",
+        ]
+        text_inputs = clip.tokenize(real_prompts + synthetic_prompts).to(device)
+
+        frame_features = []
+        with torch.no_grad():
+            for frame in frames[:8]:
+                pil_img = Image.fromarray(frame.astype("uint8"))
+                image_input = preprocess(pil_img).unsqueeze(0).to(device)
+                image_features = model.encode_image(image_input)
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                frame_features.append(image_features)
+
+            if not frame_features:
+                return 0.0, "No frames available for CLIP prompt analysis."
+
+            image_features = torch.cat(frame_features, dim=0)
+            text_features = model.encode_text(text_inputs)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+
+            similarities = (image_features @ text_features.T).cpu().numpy()
+
+        real_score = float(np.mean(similarities[:, : len(real_prompts)]))
+        fake_score = float(np.mean(similarities[:, len(real_prompts) :]))
+        if real_score > fake_score:
+            clip_score = np.clip((fake_score - real_score + 1.0) / 4.0, 0.0, 1.0)
+        else:
+            clip_score = np.clip((fake_score - real_score + 1.0) / 2.0, 0.0, 1.0)
+
+        return clip_score, f"CLIP prompt anomaly={clip_score:.3f}, real_similarity={real_score:.3f}, synthetic_similarity={fake_score:.3f}"
+    except Exception as e:
+        logger.warning(f"CLIP prompt analysis failed: {e}")
+        return 0.0, "CLIP prompt analysis unavailable."
+
+
 def _detect_embedding_anomalies(embeddings: np.ndarray) -> Tuple[float, str]:
     """
     Detect synthetic fingerprints in embedding space.
@@ -191,143 +248,6 @@ def _analyze_frequency_domain(frames: List[np.ndarray]) -> Tuple[float, str]:
     return freq_anomaly, f"Frequency domain anomaly score={freq_anomaly:.3f}"
 
 
-def _extract_json_from_model_response(response: str) -> Tuple[Optional[dict], Optional[str]]:
-    if not response:
-        return None, "Empty response"
-
-    import json
-    import re
-
-    response = response.strip()
-    response = re.sub(r"\x1B[@-_][0-?]*[ -/]*[@-~]", "", response)
-
-    # Direct parse
-    try:
-        return json.loads(response), None
-    except json.JSONDecodeError:
-        pass
-
-    def _escape_json_string_literals(raw: str) -> str:
-        escaped = []
-        in_string = False
-        was_escape = False
-        for ch in raw:
-            if ch == '"' and not was_escape:
-                in_string = not in_string
-                escaped.append(ch)
-                was_escape = False
-                continue
-            if ch == '\\' and not was_escape:
-                escaped.append(ch)
-                was_escape = True
-                continue
-            if in_string and not was_escape and ord(ch) < 0x20:
-                if ch == '\n':
-                    escaped.append('\\n')
-                elif ch == '\r':
-                    escaped.append('\\r')
-                elif ch == '\t':
-                    escaped.append('\\t')
-                elif ch == '\b':
-                    escaped.append('\\b')
-                elif ch == '\f':
-                    escaped.append('\\f')
-                else:
-                    escaped.append(f"\\u{ord(ch):04x}")
-                was_escape = False
-                continue
-            escaped.append(ch)
-            was_escape = False
-        return ''.join(escaped)
-
-    # Extract first JSON-like block
-    json_match = re.search(r"\{[\s\S]*\}", response)
-    if not json_match:
-        return None, "No JSON object found"
-
-    json_str = json_match.group()
-    try:
-        return json.loads(json_str), None
-    except json.JSONDecodeError as e:
-        fixed_json = _escape_json_string_literals(json_str)
-        fixed_json = re.sub(r',\s*(?=[}\]])', '', fixed_json)
-        fixed_json = re.sub(r'([}\]\"\d])\s*\n\s*\"', r'\1,\n\"', fixed_json)
-        fixed_json = re.sub(r'([}\]\"\d])\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)(?=\s*:)', r'\1,\n\"\2', fixed_json)
-        if "'" in fixed_json and '"' not in fixed_json:
-            fixed_json = fixed_json.replace("'", '"')
-        try:
-            return json.loads(fixed_json), None
-        except json.JSONDecodeError:
-            relaxed = re.sub(r'(\b[a-zA-Z_][a-zA-Z0-9_]*\b)\s*:', r'"\1":', fixed_json)
-            relaxed = re.sub(r',\s*\n\s*"', ',\n"', relaxed)
-            try:
-                return json.loads(relaxed), None
-            except json.JSONDecodeError:
-                return None, f"Failed to parse JSON after fixes: {e}"
-
-
-def _analyze_semantic_consistency(frames: List[np.ndarray], url: str, title: Optional[str], description: Optional[str]) -> Tuple[Optional[float], str]:
-    """
-    Use Gemma to analyze high-level semantic anomalies.
-    
-    Returns: (semantic_anomaly_score, explanation) or (None, explanation) when unavailable.
-    """
-    try:
-        import subprocess
-        import json
-
-        # Build context
-        context_parts = []
-        if title:
-            context_parts.append(f"Title: {title}")
-        if description:
-            context_parts.append(f"Description: {description}")
-        context_parts.append(f"URL: {url}")
-        context = "\n".join(context_parts)
-
-        prompt = f"""Analisis video ini untuk tanda-tanda bahwa ini adalah konten yang dihasilkan secara sintetis dari nol (bukan deepfake).
-
-Konteks:
-{context}
-
-Perhatikan:
-1. Ketidakmungkinan fisik atau ilmiah (penyimpangan dari hukum fisika)
-2. Inkonsistensi objek atau identitas orang (perubahan penampilan tiba-tiba, identitas yang tidak stabil)
-3. Pola berulang yang tidak alami atau simetri yang aneh
-4. Latar belakang atau lingkungan yang mustahil
-5. Transisi yang tidak alami atau tiba-tiba antara adegan
-
-Jika Anda tidak memiliki cukup informasi untuk menilai konten visual secara langsung, kembalikan JSON dengan "score": null dan jelaskan bahwa analisis visual tidak tersedia.
-
-Memberikan probabilitas konten yang dihasilkan secara sintetis: 0 (real) hingga 1 (synthetic)
-Respons dalam JSON: {{"score": 0.7, "reasoning": "Penjelasan singkat mengapa ini terlihat sintetis"}}"""
-
-        result = subprocess.run(
-            ["ollama", "run", "gemma4", "--format", "json", prompt],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        response = result.stdout.strip()
-        data, error = _extract_json_from_model_response(response)
-        if data is not None:
-            raw_score = data.get("score", None)
-            reasoning = data.get("reasoning", data.get("explanation", "No reasoning provided"))
-            if raw_score is None:
-                return None, f"Semantic analysis unavailable: {reasoning}"
-            try:
-                score = float(raw_score)
-            except (TypeError, ValueError):
-                return None, f"Semantic analysis unavailable: {reasoning}"
-            return np.clip(score, 0, 1), f"Semantic analysis: {reasoning}"
-        logger.warning(f"Semantic parsing failed: {error}. Raw output: {response}")
-
-    except Exception as e:
-        logger.warning(f"Semantic analysis failed: {e}")
-
-    return None, "Semantic analysis unavailable."
-
 
 def detect_synthetic_generation(
     frames_dir: str,
@@ -345,7 +265,7 @@ def detect_synthetic_generation(
     1. Vision Transformer embedding analysis
     2. Optical flow consistency analysis
     3. Frequency domain anomalies
-    4. Semantic analysis via LLM
+    4. CLIP prompt-based visual anomaly detection
     
     Args:
         frames_dir: Directory with extracted frames (frame_*.jpg)
@@ -396,19 +316,19 @@ def detect_synthetic_generation(
     freq_score, freq_note = _analyze_frequency_domain(frames)
     scores["frequency"] = freq_score
     explanations.append(freq_note)
-    
-    # 4. Semantic analysis
-    semantic_score, semantic_note = _analyze_semantic_consistency(frames, url, video_title, video_description)
-    if semantic_score is not None:
-        scores["semantic"] = semantic_score
-    explanations.append(semantic_note)
 
-    # Weighted composite score
-    # Prioritize embedding for modern models, but boost motion/frequency when semantic context is unavailable.
-    if scores.get("semantic") is None:
-        weights = {"embedding": 0.30, "motion": 0.40, "frequency": 0.30}
-    else:
-        weights = {"embedding": 0.35, "motion": 0.25, "frequency": 0.15, "semantic": 0.25}
+    # 4. CLIP prompt-based synthetic detection
+    clip_prompt_score, clip_prompt_note = _estimate_clip_prompt_synthetic_score(frames)
+    scores["clip_prompt"] = clip_prompt_score
+    explanations.append(clip_prompt_note)
+
+    # Weighted composite score using purely technical visual anomaly signals.
+    weights = {
+        "embedding": 0.35,
+        "motion": 0.30,
+        "frequency": 0.15,
+        "clip_prompt": 0.20,
+    }
 
     weighted_sum = 0.0
     total_weight = 0.0

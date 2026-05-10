@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import time
 from typing import Literal, Optional
@@ -26,6 +27,7 @@ from .nlp.misinfo_scoring import score_misinformation
 
 
 app = FastAPI(title="AI Hoax Video Platform API", version="0.1.0")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,7 +81,7 @@ class OverallAssessment(BaseModel):
 
 class ComprehensiveAnalysis(BaseModel):
     ai_detection: AIDetectionResult
-    hoax_analysis: HoaxAnalysis
+    hoax_analysis: Optional[HoaxAnalysis] = None
     misinformation_analysis: MisinformationAnalysis
     overall_assessment: OverallAssessment
 
@@ -90,6 +92,7 @@ class AnalysisResult(BaseModel):
     video_title: Optional[str] = None
     video_description: Optional[str] = None
     video_thumbnail_url: Optional[str] = None
+    video_channel: Optional[str] = None
     claims: Optional[list[str]] = None
 
 
@@ -155,7 +158,7 @@ async def _extract_video(job_id: str, url: str) -> dict:
             url=url,
             job_id=job_id,
             base_data_dir=BASE_DATA_DIR,
-            max_download_seconds=20,
+            max_download_seconds=90,
             max_frames=24,
         )
         return extraction
@@ -193,6 +196,8 @@ async def _run_analysis_job(job_id: str) -> None:
     video_title: Optional[str] = None
     video_description: Optional[str] = None
     video_thumbnail_url: Optional[str] = None
+    video_channel: Optional[str] = None
+    url: Optional[str] = record.get("url")
 
     # Get existing result to extract metadata that was stored during extraction
     result_json = record.get("result_json")
@@ -202,14 +207,9 @@ async def _run_analysis_job(job_id: str) -> None:
             video_title = existing_result.video_title
             video_description = existing_result.video_description
             video_thumbnail_url = existing_result.video_thumbnail_url
+            video_channel = existing_result.video_channel
         except:
             pass
-
-    # Get job_dir and audio_path from the job directory structure
-    url = record.get("url")
-    if not url:
-        set_job_failed(job_id, "No URL stored in job record")
-        return
 
     # Reconstruct paths - we need to get these from somewhere
     # For now, we'll store them in the result during extraction
@@ -266,6 +266,7 @@ async def _run_analysis_job(job_id: str) -> None:
         url=url,
         video_title=video_title,
         video_description=video_description,
+        video_channel=video_channel,
         transcript=transcript,
         frames_dir=os.path.join(job_dir_match, "frames") if job_dir_match else None,
         audio_path=audio_path,
@@ -275,30 +276,33 @@ async def _run_analysis_job(job_id: str) -> None:
 
     # Build result with comprehensive analysis
     if comprehensive_result:
-        comprehensive_analysis = ComprehensiveAnalysis(
-            ai_detection=AIDetectionResult(
+        comprehensive_analysis_kwargs = {
+            "ai_detection": AIDetectionResult(
                 score=comprehensive_result["ai_detection"]["score"],
                 confidence=comprehensive_result["ai_detection"]["confidence"],
                 explanation=comprehensive_result["ai_detection"]["explanation"],
             ),
-            hoax_analysis=HoaxAnalysis(
-                score=comprehensive_result["hoax_analysis"]["score"],
-                risk_level=comprehensive_result["hoax_analysis"]["risk_level"],
-                explanation=comprehensive_result["hoax_analysis"]["explanation"],
-            ),
-            misinformation_analysis=MisinformationAnalysis(
+            "misinformation_analysis": MisinformationAnalysis(
                 score=comprehensive_result["misinformation_analysis"]["score"],
                 risk_level=comprehensive_result["misinformation_analysis"]["risk_level"],
                 explanation=comprehensive_result["misinformation_analysis"]["explanation"],
             ),
-            overall_assessment=OverallAssessment(
+            "overall_assessment": OverallAssessment(
                 recommendation=comprehensive_result["overall_assessment"]["recommendation"],
                 key_findings=comprehensive_result["overall_assessment"]["key_findings"],
             ),
-        )
+        }
+        if isinstance(comprehensive_result.get("hoax_analysis"), dict):
+            comprehensive_analysis_kwargs["hoax_analysis"] = HoaxAnalysis(
+                score=comprehensive_result["hoax_analysis"]["score"],
+                risk_level=comprehensive_result["hoax_analysis"]["risk_level"],
+                explanation=comprehensive_result["hoax_analysis"]["explanation"],
+            )
+
+        comprehensive_analysis = ComprehensiveAnalysis(**comprehensive_analysis_kwargs)
         result = AnalysisResult(
             comprehensive_analysis=comprehensive_analysis,
-            analysis_error=None,
+            analysis_error=analysis_error,
             video_title=video_title,
             video_description=video_description,
             video_thumbnail_url=video_thumbnail_url,
@@ -353,6 +357,7 @@ async def extract(req: AnalyzeRequest) -> ExtractResponse:
             video_title=video_title,
             video_description=video_description,
             video_thumbnail_url=video_thumbnail_url,
+            video_channel=extraction.get("video_channel"),
         )
         async with db_lock:
             set_job_result(job_id, partial_result.model_dump_json())

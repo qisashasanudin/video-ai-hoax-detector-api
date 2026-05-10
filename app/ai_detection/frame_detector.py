@@ -2,6 +2,8 @@
 Unified AI detection orchestrator: synthetic generation + deepfakes.
 Primary: Modern generative model detection (Sora, Veo, Seedance-style)
 Fallback: Legacy deepfake detection
+Note: this module focuses on technical visual/audio anomaly detection only,
+not factual claim verification or semantic fact-checking.
 """
 
 import glob
@@ -27,7 +29,6 @@ def detect_ai_generation_from_frames(
     1. Vision Transformer embedding analysis for synthetic fingerprints
     2. Optical flow consistency to detect unnatural motion
     3. Frequency domain analysis for generation artifacts
-    4. LLM-based semantic analysis for impossible scenarios
     
     Args:
         frames_dir: Directory with frame_*.jpg files
