@@ -266,11 +266,11 @@ def _extract_json_from_model_response(response: str) -> Tuple[Optional[dict], Op
                 return None, f"Failed to parse JSON after fixes: {e}"
 
 
-def _analyze_semantic_consistency(frames: List[np.ndarray], url: str, title: Optional[str], description: Optional[str]) -> Tuple[float, str]:
+def _analyze_semantic_consistency(frames: List[np.ndarray], url: str, title: Optional[str], description: Optional[str]) -> Tuple[Optional[float], str]:
     """
     Use Gemma to analyze high-level semantic anomalies.
     
-    Returns: (semantic_anomaly_score, explanation)
+    Returns: (semantic_anomaly_score, explanation) or (None, explanation) when unavailable.
     """
     try:
         import subprocess
@@ -297,6 +297,8 @@ Perhatikan:
 4. Latar belakang atau lingkungan yang mustahil
 5. Transisi yang tidak alami atau tiba-tiba antara adegan
 
+Jika Anda tidak memiliki cukup informasi untuk menilai konten visual secara langsung, kembalikan JSON dengan "score": null dan jelaskan bahwa analisis visual tidak tersedia.
+
 Memberikan probabilitas konten yang dihasilkan secara sintetis: 0 (real) hingga 1 (synthetic)
 Respons dalam JSON: {{"score": 0.7, "reasoning": "Penjelasan singkat mengapa ini terlihat sintetis"}}"""
 
@@ -310,15 +312,21 @@ Respons dalam JSON: {{"score": 0.7, "reasoning": "Penjelasan singkat mengapa ini
         response = result.stdout.strip()
         data, error = _extract_json_from_model_response(response)
         if data is not None:
-            score = float(data.get("score", 0.0))
+            raw_score = data.get("score", None)
             reasoning = data.get("reasoning", data.get("explanation", "No reasoning provided"))
+            if raw_score is None:
+                return None, f"Semantic analysis unavailable: {reasoning}"
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError):
+                return None, f"Semantic analysis unavailable: {reasoning}"
             return np.clip(score, 0, 1), f"Semantic analysis: {reasoning}"
         logger.warning(f"Semantic parsing failed: {error}. Raw output: {response}")
 
     except Exception as e:
         logger.warning(f"Semantic analysis failed: {e}")
 
-    return 0.0, "Semantic analysis unavailable."
+    return None, "Semantic analysis unavailable."
 
 
 def detect_synthetic_generation(
@@ -391,18 +399,28 @@ def detect_synthetic_generation(
     
     # 4. Semantic analysis
     semantic_score, semantic_note = _analyze_semantic_consistency(frames, url, video_title, video_description)
-    scores["semantic"] = semantic_score
+    if semantic_score is not None:
+        scores["semantic"] = semantic_score
     explanations.append(semantic_note)
-    
+
     # Weighted composite score
-    # Prioritize embedding (most reliable for modern models) and semantic (LLM context)
-    synthetic_score = float(
-        0.35 * scores.get("embedding", 0.0)
-        + 0.25 * scores.get("motion", 0.0)
-        + 0.15 * scores.get("frequency", 0.0)
-        + 0.25 * scores.get("semantic", 0.0)
-    )
-    
+    # Prioritize embedding for modern models, but boost motion/frequency when semantic context is unavailable.
+    if scores.get("semantic") is None:
+        weights = {"embedding": 0.30, "motion": 0.40, "frequency": 0.30}
+    else:
+        weights = {"embedding": 0.35, "motion": 0.25, "frequency": 0.15, "semantic": 0.25}
+
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for key, weight in weights.items():
+        score_value = scores.get(key)
+        if score_value is None:
+            continue
+        weighted_sum += weight * score_value
+        total_weight += weight
+
+    synthetic_score = float(weighted_sum / total_weight) if total_weight else 0.0
     synthetic_score = np.clip(synthetic_score, 0.0, 1.0)
-    
+
     return synthetic_score, explanations
+
