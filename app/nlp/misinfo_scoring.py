@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple, Callable
 import logging
 
 from .web_search import search_web
+from .ocr import extract_and_analyze_text
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +147,9 @@ def _build_search_query(video_title: Optional[str], video_description: Optional[
     return query
 
 
-def _extract_claims(video_title: Optional[str], video_description: Optional[str], transcript: Optional[str]) -> List[str]:
+def _extract_claims(video_title: Optional[str], video_description: Optional[str], transcript: Optional[str], ocr_text: Optional[str] = None) -> List[str]:
     """
-    Extract individual claims/statements from video metadata.
+    Extract individual claims/statements from video metadata and OCR text.
     Extract multiple claims from any video content, regardless of length.
     """
     claims = []
@@ -186,6 +187,21 @@ def _extract_claims(video_title: Optional[str], video_description: Optional[str]
                 claims.append(sent)
                 # Limit to 5 extracted claims per video
                 if len(claims) >= 5:
+                    break
+    
+    # Extract claims from OCR text (for videos without voiceovers)
+    if ocr_text and len(ocr_text) > 20:
+        ocr_clean = ocr_text.strip()
+        
+        # Extract sentences/claims from OCR text
+        sentences = _split_sentences_smart(ocr_clean)
+        for sent in sentences:
+            sent = sent.strip()
+            # Only add meaningful sentences
+            if 15 < len(sent) < 400 and not _is_url_or_junk(sent) and sent not in claims:
+                claims.append(sent)
+                # Limit total claims
+                if len(claims) >= 6:
                     break
     
     # If no claims extracted, use title or fallback
@@ -522,9 +538,22 @@ def orchestrate_comprehensive_analysis(
         except:
             pass
 
+    # Extract text from frames using OCR
+    ocr_data = {}
+    if frames_dir:
+        update_progress("Mengekstrak teks dari frame video menggunakan OCR...")
+        ocr_data = extract_and_analyze_text(frames_dir, video_title, video_description)
+        if ocr_data.get("has_text"):
+            ocr_text = ocr_data.get("ocr_text", "")
+            data_parts.append(f"TEKS VISUAL (OCR) DARI VIDEO: {ocr_text[:1500]}")
+            logger.info(f"OCR: Extracted {len(ocr_text)} characters from frames")
+        else:
+            note = ocr_data.get("extraction_note", "OCR tidak tersedia")
+            logger.info(f"OCR: {note}")
+
     # Extract individual claims from video
     update_progress("Mengekstrak klaim dari video...")
-    claims = _extract_claims(video_title, video_description, transcript)
+    claims = _extract_claims(video_title, video_description, transcript, ocr_data.get("ocr_text", ""))
     update_progress(f"Ditemukan {len(claims)} klaim untuk dianalisis")
 
     # Search and collect evidence for each claim
@@ -569,6 +598,12 @@ DATA VIDEO YANG TERSEDIA:
 {context}
 
 PEDOMAN PENTING UNTUK ANALISIS AKURAT:
+
+TENTANG TEKS VISUAL (OCR):
+- Jika video mengandung teks visual yang diekstrak, gunakan teks tersebut sebagai sumber informasi penting
+- Teks yang terlihat di video (infografis, berita, pernyataan) memiliki bobot yang sama dengan audio/transkrip
+- Jika klaim terjadi hanya di teks visual (tanpa narasi), verifikasi klaim tersebut dengan web search yang sama
+- Perhatikan apakah teks visual cocok dengan narasi atau ada kontradiksi
 
 TENTANG MISINFORMASI:
 - Misinformasi = informasi yang secara objektif SALAH atau MENYESATKAN, bukan hanya kontroversial

@@ -13,4 +13,6 @@ clip @ git+https://github.com/openai/CLIP.git@main
 transformers==4.44.2
 accelerate==0.34.2
 requests==2.33.1
+easyocr==1.7.1
+pytesseract==0.3.10
 
