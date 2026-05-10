@@ -12,7 +12,5 @@ opencv-contrib-python==4.11.0.86
 clip @ git+https://github.com/openai/CLIP.git@main
 transformers==4.44.2
 accelerate==0.34.2
-duckduckgo-search==8.1.1
 requests==2.33.1
-searx
 

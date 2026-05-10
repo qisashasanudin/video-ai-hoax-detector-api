@@ -4,6 +4,7 @@ import math
 import os
 import re
 import subprocess
+from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple, Callable
 import logging
 
@@ -312,10 +313,11 @@ def _score_claim_with_gemma(claim: str, context: str, search_evidence: str = "")
 Petunjuk:
 1. Jawab berdasarkan bukti yang ada, jangan hanya tebak-tebakan.
 2. Kalau ada bukti dari hasil pencarian web, ambil satu kutipan langsung dari judul atau deskripsi dan tuliskan dalam penjelasan.
-3. Contoh kutipan bisa seperti: "Reuters bilang: '...'", "BBC menulis: '...'" atau "Menurut Politifact: '...'".
-4. Gunakan bahasa yang sederhana, sopan, dan jelaskan seolah Anda sedang menjelaskan kepada pembaca biasa.
-5. Nilai kemungkinan misinformasi: 0 (berita benar/terpercaya) sampai 1 (palsu/hoax).
-6. Buat penjelasan pendek tapi jelas, dalam Bahasa Indonesia.
+3. Jika ada URL bukti, sertakan secara eksplisit dengan format: "Sumber: https://...". Jangan hanya mencantumkan nama outlet tanpa URL.
+4. Contoh format penjelasan yang benar: "Wikipedia menyatakan: '...'. Sumber: https://en.wikipedia.org/..."
+5. Gunakan bahasa yang sederhana, sopan, dan jelaskan seolah Anda sedang menjelaskan kepada pembaca biasa.
+6. Nilai kemungkinan misinformasi: 0 (berita benar/terpercaya) sampai 1 (palsu/hoax).
+7. Buat penjelasan pendek tapi jelas, dalam Bahasa Indonesia.
 
 Klaim: {claim}
 
@@ -361,34 +363,70 @@ def _extract_json_from_response(response: str) -> Tuple[Optional[Dict[str, any]]
         return None, "Empty response"
 
     response = response.strip()
+    response = re.sub(r"\x1B[@-_][0-?]*[ -/]*[@-~]", "", response)
 
     # Try direct parse first
-    if response.startswith('{') and response.endswith('}'):
-        try:
-            return json.loads(response), None
-        except json.JSONDecodeError:
-            pass
-
-    import re
+    try:
+        return json.loads(response), None
+    except json.JSONDecodeError:
+        pass
 
     # Try to locate the first JSON object-like block.
     json_match = re.search(r'\{[\s\S]*\}', response)
-    if json_match:
-        json_str = json_match.group()
+    if not json_match:
+        return None, "No valid JSON object found in response"
+
+    json_str = json_match.group()
+    def _escape_json_string_literals(raw: str) -> str:
+        escaped = []
+        in_string = False
+        was_escape = False
+        for ch in raw:
+            if ch == '"' and not was_escape:
+                in_string = not in_string
+                escaped.append(ch)
+                was_escape = False
+                continue
+            if ch == '\\' and not was_escape:
+                escaped.append(ch)
+                was_escape = True
+                continue
+            if in_string and not was_escape and ord(ch) < 0x20:
+                if ch == '\n':
+                    escaped.append('\\n')
+                elif ch == '\r':
+                    escaped.append('\\r')
+                elif ch == '\t':
+                    escaped.append('\\t')
+                elif ch == '\b':
+                    escaped.append('\\b')
+                elif ch == '\f':
+                    escaped.append('\\f')
+                else:
+                    escaped.append(f"\\u{ord(ch):04x}")
+                was_escape = False
+                continue
+            escaped.append(ch)
+            was_escape = False
+        return ''.join(escaped)
+
+    try:
+        return json.loads(json_str), None
+    except json.JSONDecodeError as e:
+        fixed_json = _escape_json_string_literals(json_str)
+        fixed_json = re.sub(r',\s*(?=[}\]])', '', fixed_json)
+        fixed_json = re.sub(r'([}\]"\d])\s*\n\s*"', r'\1,\n"', fixed_json)
+        fixed_json = re.sub(r'([}\]"\d])\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)(?=\s*:)', r'\1,\n"\2', fixed_json)
+        if "'" in fixed_json and '"' not in fixed_json:
+            fixed_json = fixed_json.replace("'", '"')
         try:
-            return json.loads(json_str), None
-        except json.JSONDecodeError as e:
-            fixed_json = json_str
-            # Remove trailing commas before } or ]
-            fixed_json = re.sub(r',\s*(?=[}\]])', '', fixed_json)
-            # Insert missing commas between object values on separate lines
-            fixed_json = re.sub(r'([}\]"\d])\s*\n\s*"', r'\1,\n"', fixed_json)
-            fixed_json = re.sub(r'([}\]"\d])\s*\n\s*([A-Za-z_][A-Za-z0-9_]*)(?=\s*:)', r'\1,\n"\2', fixed_json)
-            # Normalize single-quoted keys/strings if necessary
-            if "'" in fixed_json and '"' not in fixed_json:
-                fixed_json = fixed_json.replace("'", '"')
+            return json.loads(fixed_json), None
+        except json.JSONDecodeError:
+            # Attempt one more relaxed replacement for missing commas and unquoted keys
+            relaxed = re.sub(r'(\b[a-zA-Z_][a-zA-Z0-9_]*\b)\s*:', r'"\1":', fixed_json)
+            relaxed = re.sub(r',\s*\n\s*"', ',\n"', relaxed)
             try:
-                return json.loads(fixed_json), None
+                return json.loads(relaxed), None
             except json.JSONDecodeError:
                 return None, f"Failed to parse JSON after fixes: {e}"
 
@@ -509,12 +547,23 @@ def orchestrate_comprehensive_analysis(
         else:
             evidence_lines.append("  (Tidak ada hasil pencarian)")
     
-    search_evidence_section = "\n\nBUKTI PENCARIAN WEB:\n" + "\n".join(evidence_lines) if evidence_lines else ""
+    search_evidence_section = "\n\nBUKTI PENCARIAN WEB (utamakan sumber berita kredibel):\n" + "\n".join(evidence_lines) if evidence_lines else ""
     context = "\n\n".join(data_parts) + search_evidence_section
+
+    # Get current date for context
+    today = date.today()
+    today_formatted = today.strftime("%d %B %Y")  # e.g., "10 May 2026"
 
     # Generate comprehensive analysis prompt
     update_progress("Menganalisis informasi dengan bukti online...")
     prompt = f"""Anda adalah analis konten video yang profesional dan berbasis bukti. Evaluasi faktualitas, bukan sensasionalitas.
+
+KONTEKS TANGGAL ANALISIS:
+Hari ini adalah: {today_formatted}
+Gunakan tanggal ini untuk mengevaluasi apakah klaim merujuk ke peristiwa masa lalu, sekarang, atau masa depan.
+- Jika klaim menyebutkan tanggal yang sudah lewat, verifikasi sebagai peristiwa historis yang seharusnya tercatat dalam sumber berita.
+- Jika bukti web search menunjukkan peristiwa telah terjadi pada tanggal yang dimaksud, maka itu bukan hoax tetapi laporan faktual (meskipun dapat dikonfirmasi).
+- Jika tanggal telah berlalu tapi bukti web search TIDAK menunjukkan peristiwa itu terjadi, maka itu adalah hoax.
 
 DATA VIDEO YANG TERSEDIA:
 {context}
@@ -526,6 +575,8 @@ TENTANG MISINFORMASI:
 - Fakta yang sensitif atau kontroversial BUKAN misinformasi jika dapat diverifikasi dari sumber kredibel
 - Video dari channel berita resmi cenderung menceritakan klaim autentik, bukan manipulasi
 - Jika ada bukti web search yang menegaskan klaim video, klasifikasi sebagai BUKAN misinformasi (score rendah)
+- Utamakan sumber berita kredibel seperti Reuters, BBC, AP, CNN, Guardian, Kompas, atau Detik saat menilai klaim
+- Jika tidak ada hasil pencarian dari sumber terverifikasi, jelaskan bahwa berita hoax tidak dapat dikonfirmasi dengan bukti yang tersedia
 - Hanya berikan score tinggi jika ada bukti objektif bahwa informasi SALAH atau telah dikemas secara menyesatkan
 
 TENTANG DETEKSI AI (DEEPFAKE):
@@ -545,19 +596,38 @@ TUGAS ANDA:
    - Jika video dari sumber resmi/channel terverifikasi, asumsikan autentik kecuali ada bukti jelas
 
 2. **ANALISIS HOAX** (KONTEN SEPENUHNYA PALSU):
-   - Hoax = cerita atau klaim yang sepenuhnya direkayasa/fabricated tanpa dasar fakta sama sekali
-   - Jika video hanya melaporkan tuduhan atau komentar dari seorang figur publik (misalnya "Trump menuduh Obama ..."), itu tidak otomatis menjadi HOAX. Klasifikasikan sebagai hoax hanya jika ada bukti kuat bahwa narasi sengaja dibuat-buat, dipalsukan, atau disampaikan sebagai fakta yang jelas-jelas salah.
-   - Contoh hoax: "Alien mendarat di Jakarta" tanpa konteks atau sumber sama sekali
-   - Jika ada hasil pencarian web yang membantah klaim secara total, score TINGGI
-   - Jika klaim didukung oleh sumber terverifikasi, score RENDAH
+   - Hoax = klaim atau cerita yang FAKTUAL SALAH / FABRIKASI (tidak pernah terjadi, direkayasa)
+   - HOAX CLASSIFICATION HANYA BERDASARKAN KENYATAAN FAKTUAL, BUKAN PRESENTASI
+   - KUNCI: Jika web search dari sumber kredibel MENGKONFIRMASI klaim itu benar/terjadi → BUKAN HOAX, score RENDAH (tidak peduli bagaimana presentasinya)
+   - Jika web search MEMBANTAH klaim atau tidak ada bukti sama sekali → HOAX, score TINGGI
+   
+   CONTOH KONKRET:
+   - Video klaim "Khamenei tewas 28 Feb 2026" + BBC/Reuters/AP menunjukkan event terjadi → BUKAN HOAX (score 0.0-0.2)
+   - Video klaim "UFO mendarat di Jakarta kemarin" + tidak ada laporan kredibel → HOAX (score 0.9-1.0)
+   - Video hanya melaporkan tuduhan figur publik (misalnya "Trump menuduh ...") = biasanya BUKAN hoax, tergantung apakah tuduhan itu benar-benar diucapkan
+   
+   PERHATIAN: Jangan tingkatkan score hoax hanya karena:
+   - Presentasi kurang konteks temporal (itu masalah misinformasi, bukan hoax)
+   - Video tidak menjelaskan waktu dengan jelas (itu masalah presentasi, bukan fakta)
+   - Konten terasa "seperti sedang terjadi" (itu berkaitan dengan misinformasi, bukan hoax)
+   
+   Fokus HANYA pada: Apakah klaim FAKTUAL SALAH atau DIREKAYASA?
    - Fokus pada klaim yang benar-benar tidak memiliki dasar realitas atau dibuat-buat oleh pembuat konten
 
 3. **ANALISIS MISINFORMASI** (KONTEN MENYESATKAN):
-   - Misinformasi = informasi yang sebagian benar tapi disajikan secara menyesatkan atau tidak akurat
-   - Contoh: "Vaksin COVID menyebabkan kematian massal" (mungkin benar untuk kasus langka tapi digeneralisasi)
-   - Jika ada hasil pencarian web yang menunjukkan penyimpangan fakta, score TINGGI
-   - Jika informasi akurat meskipun kontroversial, score RENDAH
-   - Fokus pada akurasi faktual, bukan kontroversialitas topik
+   - Misinformasi = informasi yang FAKTUAL TIDAK AKURAT atau DISAJIKAN MENYESATKAN (selective truth, partial lie, false generalization)
+   - Contoh: "Vaksin COVID menyebabkan kematian massal" (kasus langka digeneralisasi sebagai umum)
+   - PENTING: Jika web search dari sumber kredibel MENGKONFIRMASI klaim FAKTUAL BENAR → BUKAN misinformasi, score RENDAH
+   - Jika web search menunjukkan PENYIMPANGAN FAKTA atau GENERALISASI PALSU → MISINFORMASI, score TINGGI
+   
+   CONTOH KONKRET:
+   - Video: "Khamenei tewas 28 Feb 2026" + BBC/Reuters confirm → BUKAN misinformasi (score 0.0-0.2), meski presentasi kurang konteks
+   - Video: "Vaksin menyebabkan kematian mayoritas penerima" (fakta: hanya kasus langka) → MISINFORMASI (score 0.8-1.0)
+   - Video: Laporan berita historis tanpa tanggal jelas tetapi faktually akurat → BUKAN misinformasi
+   
+   CATATAN: Presentasi tanpa konteks temporal TIDAK OTOMATIS = misinformasi, jika faktanya benar
+   - Ini adalah masalah PRESENTASI/KONTEKS, bukan MISINFORMASI FAKTUAL
+   - Fokus pada AKURASI FAKTA, bukan gaya presentasi
 
 4. **PENILAIAN KESELURUHAN**: 
    - Beri rekomendasi berdasarkan bukti, bukan asumsi
@@ -589,7 +659,8 @@ FORMAT JSON WAJIB:
 ATURAN WAJIB:
 - Semua teks dalam Bahasa Indonesia saja
 - Output HANYA JSON, tanpa penjelasan tambahan
-- Jika ada bukti web search, kutip satu frase dari hasil atau tulis [Sumber: URL]
+- Jika ada bukti web search, kutip satu frase dari hasil dan sertakan URL sumber secara eksplisit dengan format "Sumber: https://..."
+- Jika bukti berasal dari Wikipedia atau outlet berita, sertakan URL halaman secara lengkap.
 - Evaluasi FAKTA OBJEKTIF, bukan opini atau sentiment
 - Jangan biarkan score AI atau misinformasi dipengaruhi oleh sifat kontroversial topik
 - Pastikan JSON valid"""

@@ -81,7 +81,7 @@ If the configured model cannot be loaded, the backend falls back to keyword- and
   - `asr.py` transcribes audio from the video.
   - `claim_extractor.py` extracts candidate claims from title, description, and transcript.
   - `misinfo_scoring.py` builds evidence context and uses a local LLM or fallback logic to score misinformation.
-  - `web_search.py` retrieves search evidence for claim verification.
+  - `web_search.py` retrieves search evidence for claim verification using the Bing RSS search feed only.
 
 ### Data and persistence
 

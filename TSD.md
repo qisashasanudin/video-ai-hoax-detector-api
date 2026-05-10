@@ -40,7 +40,7 @@ The API backend accepts YouTube URLs, queues asynchronous video analysis jobs, a
   - `asr.py`: audio transcription.
   - `claim_extractor.py`: claim extraction from title, description, and transcript.
   - `misinfo_scoring.py`: evidence orchestration, prompt building, and scoring.
-  - `web_search.py`: search evidence retrieval.
+  - `web_search.py`: search evidence retrieval using Bing RSS as the single search source.
 
 ### Data flow
 
