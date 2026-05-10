@@ -3,7 +3,7 @@ import os
 import time
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,7 @@ from .nlp.claim_extractor import extract_claims_from_transcript
 from .nlp.misinfo_scoring import score_misinformation
 
 
-app = FastAPI(title="Video Misinfo Platform API", version="0.1.0")
+app = FastAPI(title="AI Hoax Video Platform API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,6 +66,12 @@ class MisinformationAnalysis(BaseModel):
     explanation: str
 
 
+class HoaxAnalysis(BaseModel):
+    score: float  # 0..1
+    risk_level: str  # "TINGGI/SEDANG/RENDAH/TIDAK ADA"
+    explanation: str
+
+
 class OverallAssessment(BaseModel):
     recommendation: str
     key_findings: list[str]
@@ -73,6 +79,7 @@ class OverallAssessment(BaseModel):
 
 class ComprehensiveAnalysis(BaseModel):
     ai_detection: AIDetectionResult
+    hoax_analysis: HoaxAnalysis
     misinformation_analysis: MisinformationAnalysis
     overall_assessment: OverallAssessment
 
@@ -83,6 +90,7 @@ class AnalysisResult(BaseModel):
     video_title: Optional[str] = None
     video_description: Optional[str] = None
     video_thumbnail_url: Optional[str] = None
+    claims: Optional[list[str]] = None
 
 
 class JobResultResponse(BaseModel):
@@ -142,7 +150,7 @@ async def _extract_video(job_id: str, url: str) -> dict:
     Returns dict with video_title, video_description, video_thumbnail_url, job_dir, frames_count, audio_path.
     """
     try:
-        set_job_progress(job_id, "Menganalisa video...")
+        set_job_progress(job_id, "Menganalisis video...")
         extraction = await extract_youtube_media(
             url=url,
             job_id=job_id,
@@ -248,10 +256,12 @@ async def _run_analysis_job(job_id: str) -> None:
         clip_results = {"ai_score": ai_score_override, "ai_drivers": ai_drivers_override}
 
     # Use Gemma orchestrator for comprehensive analysis
-    set_job_progress(job_id, "Mencari bukti online untuk analisis...")
     from .nlp.misinfo_scoring import orchestrate_comprehensive_analysis
 
-    set_job_progress(job_id, "Menganalisis informasi dan hoaks...")
+    # Create a progress callback that updates the job directly
+    def update_analysis_progress(message: str) -> None:
+        set_job_progress(job_id, message)
+
     comprehensive_result, analysis_error = orchestrate_comprehensive_analysis(
         url=url,
         video_title=video_title,
@@ -260,6 +270,7 @@ async def _run_analysis_job(job_id: str) -> None:
         frames_dir=os.path.join(job_dir_match, "frames") if job_dir_match else None,
         audio_path=audio_path,
         clip_results=clip_results,
+        progress_callback=update_analysis_progress,
     )
 
     # Build result with comprehensive analysis
@@ -269,6 +280,11 @@ async def _run_analysis_job(job_id: str) -> None:
                 score=comprehensive_result["ai_detection"]["score"],
                 confidence=comprehensive_result["ai_detection"]["confidence"],
                 explanation=comprehensive_result["ai_detection"]["explanation"],
+            ),
+            hoax_analysis=HoaxAnalysis(
+                score=comprehensive_result["hoax_analysis"]["score"],
+                risk_level=comprehensive_result["hoax_analysis"]["risk_level"],
+                explanation=comprehensive_result["hoax_analysis"]["explanation"],
             ),
             misinformation_analysis=MisinformationAnalysis(
                 score=comprehensive_result["misinformation_analysis"]["score"],
@@ -286,6 +302,7 @@ async def _run_analysis_job(job_id: str) -> None:
             video_title=video_title,
             video_description=video_description,
             video_thumbnail_url=video_thumbnail_url,
+            claims=comprehensive_result.get("claims", []),
         )
     else:
         result = AnalysisResult(
@@ -294,13 +311,14 @@ async def _run_analysis_job(job_id: str) -> None:
             video_title=video_title,
             video_description=video_description,
             video_thumbnail_url=video_thumbnail_url,
+            claims=[],
         )
 
     async with db_lock:
         record = get_job_record(job_id)
         if record is None:
             return
-        set_job_progress(job_id, "Finalizing results...")
+        set_job_progress(job_id, "Analisis selesai")
         set_job_succeeded(job_id, result.model_dump_json())
 
 

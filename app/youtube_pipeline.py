@@ -36,21 +36,7 @@ def _build_ytdlp_http_headers(url: str, user_agent: str) -> Dict[str, str]:
     }
 
 
-def _detect_browser_cookie_sources() -> list[str]:
-    sources = []
-    if os.path.exists("/Applications/Microsoft Edge.app") or os.path.exists(
-        os.path.expanduser("~/Applications/Microsoft Edge.app")
-    ):
-        sources.append("edge")
-    if os.path.exists("/Applications/Google Chrome.app") or os.path.exists(
-        os.path.expanduser("~/Applications/Google Chrome.app")
-    ):
-        sources.append("chrome")
-    if os.path.exists("/Applications/Firefox.app") or os.path.exists(
-        os.path.expanduser("~/Applications/Firefox.app")
-    ):
-        sources.append("firefox")
-    return sources or ["edge", "chrome", "firefox"]
+
 
 
 def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
@@ -58,27 +44,21 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
     ffmpeg_exe = get_ffmpeg_exe()
 
     outtmpl = os.path.join(out_dir, "input.%(ext)s")
-    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip().lower()
-    cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
-    browser_sources = [cookies_from_browser] if cookies_from_browser else _detect_browser_cookie_sources()
 
     attempts = [
         {
-            "format": "best[ext=mp4][protocol=https]/best",
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "extractor_args": {"youtube": {"player_client": ["android"]}},
             "user_agent": ANDROID_USER_AGENT,
-            "use_cookies": False,
         },
         {
-            "format": "best[ext=mp4][protocol=https]/best",
+            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "extractor_args": {"youtube": {"player_client": ["web"]}},
             "user_agent": WEB_USER_AGENT,
-            "use_cookies": True,
         },
         {
             "format": "best",
             "user_agent": WEB_USER_AGENT,
-            "use_cookies": True,
         },
     ]
 
@@ -86,43 +66,34 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
     last_attempt: Optional[Dict[str, Union[str, Dict[str, list[str]]]]] = None
 
     for attempt_idx, attempt in enumerate(attempts):
-        use_cookies = attempt.get("use_cookies", False)
-        for browser in browser_sources if use_cookies else [None]:
-            base_opts = {
-                "outtmpl": outtmpl,
-                "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
-                "retries": 2,
-                "fragment_retries": 2,
-                "socket_timeout": 15,
-                "timeout": max_download_seconds,
-                "ffmpeg_location": ffmpeg_exe,
-                "merge_output_format": "mp4",
-                "http_headers": _build_ytdlp_http_headers(url, attempt["user_agent"]),
-                "sleep_interval": 0.5,
-                "max_sleep_interval": 2,
-            }
+        base_opts = {
+            "outtmpl": outtmpl,
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "retries": 2,
+            "fragment_retries": 2,
+            "socket_timeout": 15,
+            "timeout": max_download_seconds,
+            "ffmpeg_location": ffmpeg_exe,
+            "merge_output_format": "mp4",
+            "http_headers": _build_ytdlp_http_headers(url, attempt["user_agent"]),
+            "sleep_interval": 0.5,
+            "max_sleep_interval": 2,
+        }
 
-            if use_cookies:
-                if cookie_file and os.path.exists(cookie_file):
-                    base_opts["cookiefile"] = cookie_file
-                elif browser:
-                    base_opts["cookiesfrombrowser"] = (browser,)
-
-            ydl_opts = {**base_opts, **attempt}
-            ydl_opts.pop("user_agent", None)
-            ydl_opts.pop("use_cookies", None)
-            last_attempt = {"attempt": attempt, "browser": browser}
-            try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    ydl.extract_info(url, download=True)
-                return _find_downloaded_file(out_dir, url)
-            except DownloadError as e:
-                last_error = e
-                if attempt_idx < len(attempts) - 1 or (use_cookies and browser != browser_sources[-1]):
-                    time.sleep(0.5 + attempt_idx * 0.5)
-                continue
+        ydl_opts = {**base_opts, **attempt}
+        ydl_opts.pop("user_agent", None)
+        last_attempt = {"attempt": attempt}
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(url, download=True)
+            return _find_downloaded_file(out_dir, url)
+        except DownloadError as e:
+            last_error = e
+            if attempt_idx < len(attempts) - 1:
+                time.sleep(0.5 + attempt_idx * 0.5)
+            continue
 
     raise YouTubeExtractionError(
         f"Unable to download YouTube media from {url} after fallback attempts. "
@@ -141,41 +112,32 @@ def _find_downloaded_file(out_dir: str, url: str) -> str:
 def _get_youtube_metadata(url: str) -> Dict[str, str]:
     import logging
 
-    cookies_from_browser = os.getenv("YTDLP_COOKIES_FROM_BROWSER", "").strip().lower()
-    cookie_file = os.getenv("YTDLP_COOKIE_FILE", "").strip()
-    browser_sources = [cookies_from_browser] if cookies_from_browser else _detect_browser_cookie_sources()
+    for extractor in (
+        {"player_client": ["android"]},
+        {"player_client": ["web"]},
+    ):
+        try:
+            extract_args = {"youtube": extractor}
+            base_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "retries": 1,
+                "socket_timeout": 10,
+                "http_headers": _build_ytdlp_http_headers(url, ANDROID_USER_AGENT if extractor["player_client"] == ["android"] else WEB_USER_AGENT),
+                "extractor_args": extract_args,
+            }
 
-    for browser in browser_sources:
-        for extractor in (
-            {"player_client": ["android"]},
-            {"player_client": ["web"]},
-        ):
-            try:
-                extract_args = {"youtube": extractor}
-                base_opts = {
-                    "quiet": True,
-                    "no_warnings": True,
-                    "retries": 1,
-                    "socket_timeout": 10,
-                    "http_headers": _build_ytdlp_http_headers(url, ANDROID_USER_AGENT if extractor["player_client"] == ["android"] else WEB_USER_AGENT),
-                    "extractor_args": extract_args,
-                }
-                if cookie_file and os.path.exists(cookie_file):
-                    base_opts["cookiefile"] = cookie_file
-                elif browser:
-                    base_opts["cookiesfrombrowser"] = (browser,)
+            with YoutubeDL(base_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
 
-                with YoutubeDL(base_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-
-                return {
-                    "title": str(info.get("title", "Video")) or "Video",
-                    "thumbnail_url": str(info.get("thumbnail", "")) or "",
-                    "description": str(info.get("description", "")) or "",
-                }
-            except Exception as e:
-                logging.debug(f"Metadata extraction failed with {extractor}: {e}")
-                continue
+            return {
+                "title": str(info.get("title", "Video")) or "Video",
+                "thumbnail_url": str(info.get("thumbnail", "")) or "",
+                "description": str(info.get("description", "")) or "",
+            }
+        except Exception as e:
+            logging.debug(f"Metadata extraction failed with {extractor}: {e}")
+            continue
 
     return {"title": "Video", "thumbnail_url": "", "description": ""}
 

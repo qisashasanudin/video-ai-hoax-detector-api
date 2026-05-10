@@ -78,7 +78,7 @@ def set_job_succeeded(job_id: str, result_json: str) -> None:
         conn.execute(
             """
             UPDATE jobs
-            SET status = 'succeeded', updated_at = ?, result_json = ?, error = NULL, progress = NULL
+            SET status = 'succeeded', updated_at = ?, result_json = ?, error = NULL
             WHERE id = ?
             """,
             (now, result_json, job_id),

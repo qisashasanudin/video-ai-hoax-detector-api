@@ -1,41 +1,107 @@
-# Video Misinfo Platform API (MVP)
+# AI Hoax Video Platform API
 
-## Run (mock backend)
+FastAPI backend for asynchronous YouTube video analysis, including AI-generation detection, transcript extraction, and misinformation scoring.
 
-1. Create a virtual environment (recommended).
+## Overview
+
+This backend ingests a YouTube URL, queues an analysis job, and returns a job record that can be polled until completion. The analysis pipeline currently combines:
+
+- frame-level AI detection and deepfake signal aggregation in `api/app/ai_detection/`
+- audio transcription in `api/app/nlp/asr.py`
+- claim extraction in `api/app/nlp/claim_extractor.py`
+- misinfo scoring and evidence orchestration in `api/app/nlp/misinfo_scoring.py`
+
+Analysis outputs are persisted in `api/data/jobs.db` and served by `GET /jobs/{job_id}`.
+
+## Setup
+
+1. Create or activate a virtual environment:
+
+```bash
+cd api
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
 2. Install dependencies:
-   - `pip install -r requirements.txt`
-3. Start the server:
-   - `uvicorn app.main:app --reload --port 8000 --host 0.0.0.0`
 
-## Local LLM configuration
+```bash
+pip install -r requirements.txt
+```
 
-This backend can optionally use a local or explicitly configured LLM for claim-level misinfo scoring. Set the environment variable `MISINFO_LLM_MODEL` to a local model path or a Hugging Face model ID that you have access to.
+## Run the backend
+
+```bash
+cd api
+source .venv/bin/activate
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## Configuration
+
+### Backend environment variables
+
+- `MISINFO_LLM_MODEL`
+  - Optional local model path or Hugging Face model ID.
+  - When set, the backend will attempt to load this model for claim-level misinfo scoring.
+
+- `OLLAMA_MODEL_NAME`
+  - Optional Ollama model alias when using Ollama-based local inference.
+  - Default alias is `gemma4`.
+
+### Fallback behavior
+
+If the configured model cannot be loaded, the backend falls back to keyword- and evidence-driven misinfo scoring rather than failing completely.
+
+## API Endpoints
+
+- `POST /analyze`
+  - Request: `{"url": "https://www.youtube.com/watch?v=VIDEO_ID", "source": "youtube"}`
+  - Response: `{"job_id": "job_..."}`
+
+- `GET /jobs/{job_id}`
+  - Response includes job status and the analysis result payload.
+
+- `GET /health`
+  - Response: `{"status": "ok"}`
+
+## Architecture
+
+### Backend structure
+
+- `app/main.py`
+  - API routes and analysis job orchestration.
+  - Creates jobs, updates progress, and persists results.
+
+- `app/ai_detection/`
+  - `frame_detector.py` and `deepfake_detector.py` contain the visual AI detection pipeline.
+  - Combines CLIP-based scoring, temporal consistency, and audio/visual heuristic signals.
+
+- `app/nlp/`
+  - `asr.py` transcribes audio from the video.
+  - `claim_extractor.py` extracts candidate claims from title, description, and transcript.
+  - `misinfo_scoring.py` builds evidence context and uses a local LLM or fallback logic to score misinformation.
+  - `web_search.py` retrieves search evidence for claim verification.
+
+### Data and persistence
+
+- `api/data/jobs.db`
+  - SQLite database storing job metadata, status, result JSON, and errors.
+
+- `api/data/jobs/`
+  - Stores extracted job artifacts such as frames and audio files.
+
+## Frontend integration
+
+The frontend is hosted in `web/` and depends on `NEXT_PUBLIC_API_BASE_URL` to target this API.
 
 Example:
 
-- Local model path:
-  - `export MISINFO_LLM_MODEL=/path/to/gemma-2b-it`
-- Hugging Face model with access:
-  - `export MISINFO_LLM_MODEL=google/gemma-2b-it`
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+```
 
-If `MISINFO_LLM_MODEL` is not set or the model cannot be loaded, the system falls back to keyword-based misinfo scoring.
+## Notes
 
-## Ollama / Gemma 4 automation
-
-A helper script is available to provision Gemma 4 locally using Ollama:
-
-- `./scripts/ensure_gemma4.sh`
-- `./scripts/ensure_gemma4.sh gemma4`
-
-If you have `ollama` installed, the script will pull the default local Ollama model alias `gemma4`.
-
-By default, the backend will attempt to use `OLLAMA_MODEL_NAME` or the default local Ollama model alias `gemma4` if `MISINFO_LLM_MODEL` is not configured.
-
-If you want to force a specific model path or ID, set `MISINFO_LLM_MODEL` explicitly.
-
-## Endpoints
-
-- `POST /analyze` -> returns `{ "job_id": "..." }`
-- `GET /jobs/{job_id}` -> returns `{ "status": "...", "result": {...} | null, "error": "..." | null }`
-- `GET /health` -> `{ "status": "ok" }`
+- This API is designed as an MVP for developer experimentation and not production deployment.
+- The system currently supports YouTube as the source input.
