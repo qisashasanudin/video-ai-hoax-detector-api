@@ -19,7 +19,7 @@ from .store import (
     get_job as get_job_record,
 )
 
-from .youtube_pipeline import extract_youtube_media
+from .media_pipeline import extract_media
 from .ai_detection.frame_detector import detect_ai_generation_from_frames
 from .nlp.asr import transcribe_audio
 from .nlp.claim_extractor import extract_claims_from_transcript
@@ -48,7 +48,7 @@ JobStatus = Literal["queued", "running", "succeeded", "failed", "extracted"]
 
 class AnalyzeRequest(BaseModel):
     url: str = Field(..., min_length=1)
-    source: Literal["youtube"] = "youtube"
+    source: Literal["youtube", "tiktok"] = "youtube"
 
 
 class ClaimVerdict(str):
@@ -154,7 +154,7 @@ async def _extract_video(job_id: str, url: str) -> dict:
     """
     try:
         set_job_progress(job_id, "Menganalisis video...")
-        extraction = await extract_youtube_media(
+        extraction = await extract_media(
             url=url,
             job_id=job_id,
             base_data_dir=BASE_DATA_DIR,

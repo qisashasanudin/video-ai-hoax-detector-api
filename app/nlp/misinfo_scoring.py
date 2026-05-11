@@ -440,19 +440,61 @@ def _is_trusted_search_item(item: Dict[str, str], claim: str) -> bool:
     return False
 
 
-def _has_strong_credible_confirmation(claim_evidence: Dict[str, List[Dict[str, str]]], video_channel: Optional[str]) -> bool:
+def _has_contradicting_evidence(results: List[Dict[str, str]]) -> bool:
+    """
+    Check if search results contain keywords indicating the claim is false/fake/hoax.
+    Returns True if evidence CONTRADICTS the claim.
+    """
+    contradiction_keywords = [
+        "fake", "palsu", "hoax", "direkayasa", "digitally altered", "dimanipulasi",
+        "debunked", "dibantah", "false", "salah", "tidak akurat", "inaccurate",
+        "fabricated", "fabrikasi", "unverified", "tidak terverifikasi", "misleading",
+        "menyesatkan", "diklarifikasi salah", "klarifikasi palsu", "bukan fakta",
+        "tidak terjadi", "never happened", "no evidence", "tidak ada bukti",
+        "clarified as false", "denied", "dibantah", "is false", "adalah palsu",
+        "tidak benar", "tidak nyata", "fiction", "fiksi", "claimed false",
+        "marked as false", "fact-check", "debunk"
+    ]
+    
+    for item in results:
+        title = (item.get("title") or "").lower()
+        snippet = (item.get("snippet") or "").lower()
+        combined = f"{title} {snippet}"
+        
+        for keyword in contradiction_keywords:
+            if keyword.lower() in combined:
+                return True
+    
+    return False
+
+
+def _has_strong_credible_confirmation(claim_evidence: Dict[str, List[Dict[str, str]]], video_channel: Optional[str]) -> Tuple[bool, bool]:
+    """
+    Check if credible sources confirm or contradict the claims.
+    Returns: (has_confirmation: bool, has_contradiction: bool)
+    """
     confirmed_count = 0
+    contradicted_count = 0
     total_claims = len(claim_evidence)
+    
     for claim, results in claim_evidence.items():
         if not results:
             continue
-        if any(_is_trusted_search_item(item, claim) for item in results):
+        
+        # Check for contradicting evidence first
+        if _has_contradicting_evidence(results):
+            contradicted_count += 1
+        # Then check for supporting evidence
+        elif any(_is_trusted_search_item(item, claim) for item in results):
             confirmed_count += 1
-    if confirmed_count >= max(1, total_claims // 2):
-        return True
+    
+    has_confirmation = confirmed_count >= max(1, total_claims // 2)
     if _is_trusted_channel(video_channel) and confirmed_count > 0:
-        return True
-    return False
+        has_confirmation = True
+    
+    has_contradiction = contradicted_count > 0
+    
+    return has_confirmation, has_contradiction
 
 
 def _clamp_hoax_and_misinformation_result(
@@ -463,26 +505,57 @@ def _clamp_hoax_and_misinformation_result(
     if not result:
         return result
 
-    trusted_confirmation = _has_strong_credible_confirmation(claim_evidence, video_channel)
-    if not trusted_confirmation:
-        return result
-
-    if isinstance(result.get("hoax_analysis"), dict):
-        hoax_score = float(result["hoax_analysis"].get("score", 0.0))
-        if hoax_score > 0.35:
-            result["hoax_analysis"]["score"] = 0.25
-            result["hoax_analysis"]["risk_level"] = "RENDAH"
-            result["hoax_analysis"]["explanation"] = (
-                "Bukti dari outlet berita kredibel mendukung klaim ini; kemungkinan hoax diturunkan."
-            )
-    if isinstance(result.get("misinformation_analysis"), dict):
-        misinfo_score = float(result["misinformation_analysis"].get("score", 0.0))
-        if misinfo_score > 0.35:
-            result["misinformation_analysis"]["score"] = 0.25
-            result["misinformation_analysis"]["risk_level"] = "RENDAH"
-            result["misinformation_analysis"]["explanation"] = (
-                "Bukti dari outlet berita kredibel mendukung klaim ini; kemungkinan misinformasi diturunkan."
-            )
+    has_confirmation, has_contradiction = _has_strong_credible_confirmation(claim_evidence, video_channel)
+    
+    # If evidence contradicts the claim, INCREASE hoax/misinformation scores
+    if has_contradiction:
+        if isinstance(result.get("hoax_analysis"), dict):
+            hoax_score = float(result["hoax_analysis"].get("score", 0.0))
+            # If model scored it low but evidence contradicts, raise it significantly
+            if hoax_score < 0.7:
+                result["hoax_analysis"]["score"] = min(1.0, hoax_score + 0.6)
+                if result["hoax_analysis"]["score"] > 0.6:
+                    result["hoax_analysis"]["risk_level"] = "TINGGI"
+                elif result["hoax_analysis"]["score"] > 0.35:
+                    result["hoax_analysis"]["risk_level"] = "SEDANG"
+                result["hoax_analysis"]["explanation"] = (
+                    "Bukti dari outlet berita kredibel menunjukkan bahwa klaim ini adalah hoax atau konten yang direkayasa. "
+                    "Sumber berita menyatakan konten ini palsu atau digitally altered."
+                )
+        
+        if isinstance(result.get("misinformation_analysis"), dict):
+            misinfo_score = float(result["misinformation_analysis"].get("score", 0.0))
+            # If model scored it low but evidence contradicts, raise it significantly
+            if misinfo_score < 0.7:
+                result["misinformation_analysis"]["score"] = min(1.0, misinfo_score + 0.6)
+                if result["misinformation_analysis"]["score"] > 0.6:
+                    result["misinformation_analysis"]["risk_level"] = "TINGGI"
+                elif result["misinformation_analysis"]["score"] > 0.35:
+                    result["misinformation_analysis"]["risk_level"] = "SEDANG"
+                result["misinformation_analysis"]["explanation"] = (
+                    "Bukti dari outlet berita kredibel menunjukkan informasi ini tidak akurat atau menyesatkan. "
+                    "Fakta sebenarnya berbeda dengan apa yang diklaim dalam video."
+                )
+    
+    # If evidence confirms the claim, DECREASE scores (original logic)
+    elif has_confirmation:
+        if isinstance(result.get("hoax_analysis"), dict):
+            hoax_score = float(result["hoax_analysis"].get("score", 0.0))
+            if hoax_score > 0.35:
+                result["hoax_analysis"]["score"] = 0.25
+                result["hoax_analysis"]["risk_level"] = "RENDAH"
+                result["hoax_analysis"]["explanation"] = (
+                    "Bukti dari outlet berita kredibel mendukung klaim ini; kemungkinan hoax diturunkan."
+                )
+        if isinstance(result.get("misinformation_analysis"), dict):
+            misinfo_score = float(result["misinformation_analysis"].get("score", 0.0))
+            if misinfo_score > 0.35:
+                result["misinformation_analysis"]["score"] = 0.25
+                result["misinformation_analysis"]["risk_level"] = "RENDAH"
+                result["misinformation_analysis"]["explanation"] = (
+                    "Bukti dari outlet berita kredibel mendukung klaim ini; kemungkinan misinformasi diturunkan."
+                )
+    
     return result
 
 
@@ -560,6 +633,57 @@ def _extract_json_from_response(response: str) -> Tuple[Optional[Dict[str, any]]
                 return None, f"Failed to parse JSON after fixes: {e}"
 
     return None, "No valid JSON object found in response"
+
+
+def _generate_search_queries_with_llm(video_title: Optional[str], video_description: Optional[str], transcript: Optional[str], ocr_text: Optional[str] = None, model_alias: str = "gemma4") -> List[str]:
+    """
+    Use LLM to generate bilingual Google Search queries (English and Bahasa Indonesia).
+    """
+    context_parts = []
+    if video_title:
+        context_parts.append(f"Title: {video_title}")
+    if video_description:
+        context_parts.append(f"Description: {video_description[:1000]}")
+    if transcript:
+        context_parts.append(f"Transcript: {transcript[:1500]}")
+    if ocr_text:
+        context_parts.append(f"OCR: {ocr_text[:500]}")
+    
+    context = "\n".join(context_parts)
+    
+    prompt = f"""Anda adalah pembuat kata kunci pencarian (search query generator). Berdasarkan konteks video berikut, buat persis 2 kalimat pendek bergaya "Google Search keywords" untuk memverifikasi klaim utama dalam video.
+Buat 1 kueri dalam bahasa Inggris dan 1 kueri dalam bahasa Indonesia.
+Kueri harus sangat singkat (maksimal 6 kata), langsung pada intinya, dan persis seperti apa yang orang tulis di Google Search untuk mencari berita tersebut.
+PENTING: Output HANYA JSON object dengan key "queries" yang berisi array string. Jangan tambah teks lain.
+
+Contoh: {{"queries": ["Ali Khamenei killed Tehran airstrike", "Ali Khamenei tewas serangan udara Teheran"]}}
+
+Konteks Video:
+{context}"""
+
+    try:
+        completed = subprocess.run(
+            ["ollama", "run", model_alias, "--format", "json", "--nowordwrap", prompt],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+        response = completed.stdout.strip()
+        parsed_json, error = _extract_json_from_response(response)
+        
+        if parsed_json and isinstance(parsed_json, dict) and "queries" in parsed_json:
+            queries = parsed_json["queries"]
+            if isinstance(queries, list) and len(queries) > 0:
+                return queries
+        elif parsed_json and isinstance(parsed_json, list) and len(parsed_json) > 0:
+            return parsed_json
+            
+    except Exception as e:
+        logger.warning(f"LLM query generation failed: {e}")
+        
+    # Fallback to basic extraction
+    return _extract_claims(video_title, video_description, transcript, ocr_text)[:2]
 
 
 def orchestrate_comprehensive_analysis(
@@ -681,10 +805,10 @@ def orchestrate_comprehensive_analysis(
             note = ocr_data.get("extraction_note", "OCR tidak tersedia")
             logger.info(f"OCR: {note}")
 
-    # Extract individual claims from video
-    update_progress("Mengekstrak klaim dari video...")
-    claims = _extract_claims(video_title, video_description, transcript, ocr_data.get("ocr_text", ""))
-    update_progress(f"Ditemukan {len(claims)} klaim untuk dianalisis")
+    # Extract search queries from video context using Gemma
+    update_progress("Membuat kata kunci pencarian bilingual dari video...")
+    claims = _generate_search_queries_with_llm(video_title, video_description, transcript, ocr_data.get("ocr_text", ""))
+    update_progress(f"Ditemukan {len(claims)} kata kunci untuk pencarian")
 
     # Search and collect evidence for each claim
     update_progress("Mencari bukti online untuk setiap klaim...")
@@ -801,6 +925,17 @@ TUGAS ANDA:
    CATATAN: Presentasi tanpa konteks temporal TIDAK OTOMATIS = misinformasi, jika faktanya benar
    - Ini adalah masalah PRESENTASI/KONTEKS, bukan MISINFORMASI FAKTUAL
    - Fokus pada AKURASI FAKTA, bukan gaya presentasi
+
+PENTING - DETEKSI BUKTI YANG BERTENTANGAN:
+- Periksa dengan SANGAT HATI-HATI apakah web search berisi kata-kata seperti:
+  "fake", "palsu", "hoax", "digitally altered", "dimanipulasi", "dibantah", "tidak benar",
+  "tidak terjadi", "never happened", "fact-check shows false", "debunked", "tidak ada bukti"
+- Jika search results MENGANDUNG kata-kata ini, itu berarti sumber kredibel MENGATAKAN klaim itu PALSU/HOAX/DIREKAYASA
+- TINGKATKAN score hoax/misinformasi SECARA SIGNIFIKAN jika ada bukti yang bertentangan/mengatakan klaim palsu
+- CONTOH:
+  * Search result: "No snowfall in Mecca - viral video is digitally altered" → HOAX yang dibantah, score TINGGI (0.8-1.0)
+  * Search result: "Khamenei death confirmed by BBC/Reuters" → BUKAN hoax, mendukung klaim, score RENDAH (0.1-0.3)
+  * Search result: "Vaksin aman menurut WHO, kematian langka terjadi" → BUKAN misinformasi, score RENDAH (0.2-0.3)
 
 4. **PENILAIAN KESELURUHAN**: 
    - Beri rekomendasi berdasarkan bukti, bukan asumsi

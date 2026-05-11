@@ -19,7 +19,7 @@ WEB_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-class YouTubeExtractionError(RuntimeError):
+class MediaExtractionError(RuntimeError):
     pass
 
 
@@ -40,7 +40,7 @@ def _build_ytdlp_http_headers(url: str, user_agent: str) -> Dict[str, str]:
 
 
 
-def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
+def _download_media(url: str, out_dir: str, max_download_seconds: int) -> str:
     _ensure_dir(out_dir)
     ffmpeg_exe = get_ffmpeg_exe()
 
@@ -96,8 +96,8 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
                 time.sleep(0.5 + attempt_idx * 0.5)
             continue
 
-    raise YouTubeExtractionError(
-        f"Unable to download YouTube media from {url} after fallback attempts. "
+    raise MediaExtractionError(
+        f"Unable to download media from {url} after fallback attempts. "
         f"Last attempt={last_attempt}. Last error: {last_error}"
     ) from last_error
 
@@ -105,12 +105,12 @@ def _download_youtube(url: str, out_dir: str, max_download_seconds: int) -> str:
 def _find_downloaded_file(out_dir: str, url: str) -> str:
     candidates = sorted(pathlib.Path(out_dir).glob("input.*"))
     if not candidates:
-        raise YouTubeExtractionError(f"Download succeeded but output file not found for url: {url}")
+        raise MediaExtractionError(f"Download succeeded but output file not found for url: {url}")
     mp4 = [c for c in candidates if c.suffix.lower() == ".mp4"]
     return str(mp4[0] if mp4 else candidates[0])
 
 
-def _get_youtube_metadata(url: str) -> Dict[str, str]:
+def _get_media_metadata(url: str) -> Dict[str, str]:
     import logging
 
     for extractor in (
@@ -290,7 +290,7 @@ def _extract_frames_and_audio(
     return len(frame_files)
 
 
-async def extract_youtube_media(
+async def extract_media(
     *,
     url: str,
     job_id: str,
@@ -299,7 +299,7 @@ async def extract_youtube_media(
     max_frames: int = 12,
 ) -> Dict[str, Union[Optional[str], int]]:
     """
-    Downloads YouTube video (best effort) and extracts:
+    Downloads media (best effort) and extracts:
     - sampled frames (jpg)
     - mono 16kHz WAV audio
     - video metadata (title, thumbnail)
@@ -314,13 +314,13 @@ async def extract_youtube_media(
     # Extract metadata first
     metadata = await loop.run_in_executor(
         None,
-        _get_youtube_metadata,
+        _get_media_metadata,
         url,
     )
 
     input_video_path = await loop.run_in_executor(
         None,
-        _download_youtube,
+        _download_media,
         url,
         job_dir,
         max_download_seconds,

@@ -1,3 +1,4 @@
+import base64
 import html as html_lib
 import logging
 import re
@@ -235,14 +236,27 @@ def _search_yahoo_html(query: str, max_results: int = 5) -> List[Dict[str, str]]
         return []
 
 
+def _decode_bing_redirect(href: str) -> str:
+    match = re.search(r"u=a1([^&]+)", href)
+    if not match:
+        return href
+    try:
+        encoded = match.group(1)
+        # Add padding if necessary
+        encoded += "=" * ((4 - len(encoded) % 4) % 4)
+        return base64.urlsafe_b64decode(encoded).decode("utf-8")
+    except Exception:
+        return href
+
+
 def _search_bing_html(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     if not query:
         return []
 
     url = f"https://www.bing.com/search?q={quote_plus(query)}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
 
     try:
@@ -257,6 +271,7 @@ def _search_bing_html(query: str, max_results: int = 5) -> List[Dict[str, str]]:
             re.IGNORECASE | re.DOTALL,
         ):
             href = html_lib.unescape(match.group(1))
+            href = _decode_bing_redirect(href)
             title = _strip_html_tags(match.group(2))
             snippet = ""
             after_anchor = html[match.end() : match.end() + 400]

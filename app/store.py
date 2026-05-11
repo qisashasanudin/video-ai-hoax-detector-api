@@ -35,13 +35,19 @@ def init_db() -> None:
               updated_at REAL NOT NULL,
               result_json TEXT,
               error TEXT,
-              progress TEXT
+              progress TEXT,
+              progress_history TEXT
             );
             """
         )
         # Add progress column if it doesn't exist (for migration)
         try:
             conn.execute("ALTER TABLE jobs ADD COLUMN progress TEXT;")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        # Add progress_history column if it doesn't exist (for migration)
+        try:
+            conn.execute("ALTER TABLE jobs ADD COLUMN progress_history TEXT;")
         except sqlite3.OperationalError:
             pass  # Column already exists
         conn.commit()
@@ -53,9 +59,9 @@ def create_job(job_id: str, *, url: str, source: str) -> None:
         conn.execute(
             """
             INSERT OR REPLACE INTO jobs
-              (id, status, source, url, created_at, updated_at, result_json, error, progress)
+              (id, status, source, url, created_at, updated_at, result_json, error, progress, progress_history)
             VALUES
-              (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+              (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
             """,
             (job_id, "queued", source, url, now, now),
         )
@@ -117,17 +123,29 @@ def set_job_progress(job_id: str, progress: str) -> None:
             "UPDATE jobs SET progress = ?, updated_at = ? WHERE id = ?",
             (progress, now, job_id),
         )
+        conn.execute(
+            "UPDATE jobs SET progress_history = json_insert(COALESCE(progress_history, '[]'), '$[#]', ?) WHERE id = ?",
+            (progress, job_id),
+        )
         conn.commit()
 
 def get_job(job_id: str) -> Optional[dict[str, Any]]:
     with _connect() as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
-            "SELECT id, status, url, result_json, error, progress FROM jobs WHERE id = ?",
+            "SELECT id, status, url, result_json, error, progress, progress_history FROM jobs WHERE id = ?",
             (job_id,),
         )
         row = cur.fetchone()
         if row is None:
             return None
-        return dict(row)
+        result = dict(row)
+        if result.get("progress_history") is None:
+            result["progress_history"] = []
+        else:
+            try:
+                result["progress_history"] = json.loads(result["progress_history"])
+            except (TypeError, ValueError):
+                result["progress_history"] = []
+        return result
 
