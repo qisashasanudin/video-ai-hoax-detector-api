@@ -48,7 +48,7 @@ JobStatus = Literal["queued", "running", "succeeded", "failed", "extracted"]
 
 class AnalyzeRequest(BaseModel):
     url: str = Field(..., min_length=1)
-    source: Literal["youtube", "tiktok"] = "youtube"
+    source: Literal["youtube", "tiktok", "instagram"] = "youtube"
 
 
 class ClaimVerdict(str):
@@ -189,7 +189,6 @@ async def _run_analysis_job(job_id: str) -> None:
     ai_score_override: Optional[float] = None
     ai_drivers_override: Optional[list[str]] = None
     misinfo_score_override: Optional[float] = None
-    claims_override: Optional[list[AnalysisClaim]] = None
     transcript: str = ""
     asr_note: Optional[str] = None
     audio_path: Optional[str] = None
