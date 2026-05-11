@@ -1,10 +1,10 @@
 # AI Hoax Video Platform API
 
-FastAPI backend for asynchronous YouTube video analysis, including AI-generation detection, transcript extraction, and misinformation scoring.
+FastAPI backend for asynchronous video analysis (YouTube, TikTok, Instagram), including AI-generation detection, transcript extraction, and misinformation scoring.
 
 ## Overview
 
-This backend ingests a YouTube URL, queues an analysis job, and returns a job record that can be polled until completion. The analysis pipeline currently combines:
+This backend ingests a YouTube, TikTok, or Instagram URL, queues an analysis job, and returns a job record that can be polled until completion. The analysis pipeline currently combines:
 
 - frame-level AI detection and deepfake signal aggregation in `api/app/ai_detection/`
 - audio transcription in `api/app/nlp/asr.py`
@@ -60,7 +60,7 @@ If the configured model cannot be loaded, the backend falls back to a more limit
 ## API Endpoints
 
 - `POST /analyze`
-  - Request: `{"url": "https://www.youtube.com/watch?v=VIDEO_ID", "source": "youtube"}`
+  - Request: `{"url": "https://www.youtube.com/watch?v=VIDEO_ID", "source": "youtube"}` (source can be `"youtube"`, `"tiktok"`, or `"instagram"`)
   - Response: `{"job_id": "job_..."}`
 
 - `GET /jobs/{job_id}`
@@ -84,7 +84,7 @@ If the configured model cannot be loaded, the backend falls back to a more limit
 - `app/nlp/`
   - `asr.py` transcribes audio from the video.
   - `claim_extractor.py` extracts candidate claims from title, description, and transcript.
-  - `misinfo_scoring.py` builds evidence context and uses a local LLM or fallback logic to score misinformation.
+  - `misinfo_scoring.py` builds evidence context, generates bilingual Google Search queries using Gemma, and uses a local LLM or fallback logic to score misinformation.
 - `app/nlp/web_search.py` retrieves search evidence for claim verification using Bing HTML search primarily, with Yahoo HTML search as a fallback when needed.
 
 ### Data and persistence
@@ -108,4 +108,4 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ## Notes
 
 - This API is designed as an MVP for developer experimentation and not production deployment.
-- The system currently supports YouTube as the source input.
+- The system currently supports YouTube, TikTok, and Instagram as source inputs.

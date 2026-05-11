@@ -2,7 +2,7 @@
 
 ## System summary
 
-The API backend accepts YouTube URLs, queues asynchronous video analysis jobs, and returns structured results for AI generation detection and misinformation risk.
+The API backend accepts YouTube, TikTok, and Instagram URLs, queues asynchronous video analysis jobs, and returns structured results for AI generation detection and misinformation risk.
 
 ### Key outputs
 
@@ -38,13 +38,13 @@ The API backend accepts YouTube URLs, queues asynchronous video analysis jobs, a
 
 - `app/nlp/`
   - `asr.py`: audio transcription.
-  - `claim_extractor.py`: claim extraction from title, description, and transcript.
-  - `misinfo_scoring.py`: evidence orchestration, prompt building, and scoring.
-  - `app/nlp/web_search.py`: search evidence retrieval using Bing HTML search first, with Yahoo HTML search as a fallback for resilience.
+  - `claim_extractor.py`: fallback claim extraction.
+  - `misinfo_scoring.py`: evidence orchestration, Gemma-powered bilingual search query generation, prompt building, and scoring.
+  - `app/nlp/web_search.py`: search evidence retrieval using fast and resilient Bing HTML scraping primarily, with Yahoo HTML search as a fallback.
 
 ### Data flow
 
-1. User submits a `POST /analyze` request with a YouTube URL.
+1. User submits a `POST /analyze` request with a YouTube, TikTok, or Instagram URL.
 2. Backend creates a new job record and marks it as `queued`.
 3. Background worker extracts media, samples frames, transcribes audio, and generates claims.
 4. Evidence is collected from web search results and used for scoring.
@@ -59,7 +59,7 @@ Request body:
 ```json
 {
   "url": "https://www.youtube.com/watch?v=VIDEO_ID",
-  "source": "youtube"
+  "source": "youtube" // or "tiktok", "instagram"
 }
 ```
 
@@ -134,5 +134,5 @@ Artifacts such as extracted frames and audio are stored under `api/data/jobs/` f
 ## Limitations
 
 - This backend is an MVP and may fall back to heuristic scoring when models or media extraction fail. If the misinfo model is unavailable, AI detection will still use technical frame analysis if possible, while hoax/misinformation scores are marked as unavailable.
-- Only YouTube video analysis is supported at this stage.
+- YouTube, TikTok, and Instagram video analysis are supported at this stage.
 - The system is intended for developer experimentation rather than production deployment.
